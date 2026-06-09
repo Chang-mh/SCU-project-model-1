@@ -1,0 +1,6 @@
+客户名称：四川示例科技有限公司
+联系人：张三
+手机号：13800138000
+邮箱：test@example.com
+报价：50万元
+API_KEY = abcdefghijklmnop123456

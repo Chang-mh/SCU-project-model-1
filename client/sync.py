@@ -1,0 +1,37 @@
+"""客户端规则同步模块"""
+
+import requests
+from loguru import logger
+
+try:
+    from local_db import LocalDB
+except ImportError:
+    from client.local_db import LocalDB
+
+
+def sync_rules(server_url: str, db: LocalDB) -> dict:
+    """从服务端同步规则到本地 SQLite"""
+    local_version = db.get_local_version()
+    url = f"{server_url}/api/client/rules?version={local_version}"
+    logger.info(f"同步规则: 本地版本={local_version}, 请求={url}")
+
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        logger.error(f"规则同步失败: {e}")
+        return {"success": False, "error": str(e)}
+
+    latest_version = data.get("latest_version", 0)
+    rules = data.get("rules", [])
+    fingerprints = data.get("fingerprints", [])
+
+    if not rules and latest_version <= local_version:
+        logger.info("规则已是最新，无需更新")
+        return {"success": True, "updated": False, "version": local_version}
+
+    db.save_rules(rules, fingerprints)
+    db.update_local_version(latest_version)
+    logger.info(f"规则同步成功: 新增{len(rules)}条规则, {len(fingerprints)}条指纹, 版本={latest_version}")
+    return {"success": True, "updated": True, "version": latest_version, "rules_count": len(rules), "fingerprints_count": len(fingerprints)}
