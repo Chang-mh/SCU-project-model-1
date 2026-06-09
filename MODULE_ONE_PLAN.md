@@ -17,11 +17,11 @@
 
 ```mermaid
 flowchart LR
-    U["用户上传样本敏感文件"] --> API["服务端 HTTP API"]
+    U["用户上传样本敏感文件"] --> API["服务端 Hertz HTTP API"]
     API --> P["文本解析与清洗"]
     P --> R["规则生成器"]
     P --> F["指纹生成器"]
-    P --> AI["大模型语义识别"]
+    P --> AI["Eino 大模型语义识别"]
     R --> DB[("服务端 MySQL")]
     F --> DB
     AI --> DB
@@ -81,33 +81,35 @@ flowchart LR
 
 | 技术 | 是什么 | 模块一是否需要 | 说明 |
 |---|---|---|---|
-| FastAPI | Python 的 Web API 框架，用来编写 `POST /samples`、`GET /rules` 等 HTTP 接口 | 推荐，但不是唯一选择 | 如果模块一服务端用 Python，FastAPI 很适合快速提供 API；如果团队最终统一 Go，也可以用 Gin / Hertz 替代 |
-| Uvicorn | Python ASGI 应用服务器，用来运行 FastAPI 服务 | 使用 FastAPI 时需要 | FastAPI 本身只定义接口逻辑，Uvicorn 负责把服务真正跑起来并监听端口 |
-| SQLAlchemy | Python ORM，把数据库表映射成 Python 对象 | 推荐 | 服务端明确使用 MySQL 后，ORM 能统一管理样本、规则、版本等表结构，减少手写 SQL 出错 |
-| Pydantic | Python 数据校验和序列化库 | 使用 FastAPI 时推荐 | FastAPI 深度集成 Pydantic；可自动校验入参、生成 OpenAPI 文档，减少手写校验代码 |
-| logging / loguru | 运行日志工具 | 推荐，但不是业务模块日志 | 这里的日志只用于排查“上传失败、规则同步失败、扫描异常”等运行问题，不是模块二/三的外发告警日志 |
+| Hertz | 字节跳动开源的高性能 Go HTTP 框架，用来编写 `POST /samples`、`GET /rules` 等 HTTP 接口 | 必须 | 模块三已使用 Go + Eino，模块一服务端统一 Go 技术栈；Hertz 与 Eino 同属 CloudWeGo 生态，天然兼容 |
+| Eino | 字节跳动开源的 Go AI 应用开发框架，编排 ChatModel 和 Embedding 调用 | 必须 | 用于接入火山云方舟 ChatModel / Embedding，实现文档语义识别和向量化 |
+| GORM | Go ORM，把数据库表映射成 Go 结构体 | 推荐 | 服务端使用 MySQL，GORM 是 Go 生态最成熟的 ORM，统一管理样本、规则、版本等表结构 |
+| go-playground/validator | Go 请求参数校验库 | 推荐 | 配合 Hertz 做 API 入参绑定和校验 |
+| zap / logrus | Go 结构化运行日志库 | 推荐 | 这里的日志只用于排查"上传失败、规则同步失败、扫描异常"等运行问题，不是模块二/三的外发告警日志 |
 
-结论：如果模块一采用 Python 实现服务端，`FastAPI + Uvicorn + Pydantic + SQLAlchemy + MySQL` 是推荐组合。若后续决定服务端统一 Go，则 Python Web 组件可替换为 Go 的 HTTP 框架，但规则生成、文档解析、语义识别仍可保留 Python 服务作为独立微服务。
+结论：模块一服务端采用 Go 技术栈，`Hertz + Eino + GORM + MySQL` 是核心组合，与模块三的 Go + Eino 统一语言和框架生态。客户端扫描脚本仍可使用 Python，与服务端通过 HTTP API 通信，语言差异由 API 隔离。
 
 ### 3.2 服务端技术
 
 | 技术 | 用途 | 选择原因 |
 |---|---|---|
-| Python 3.10+ | 主开发语言 | 文档解析、文本处理、规则生成生态完整 |
-| FastAPI | HTTP API 服务 | 推荐方案，轻量、接口文档自动生成、适合前后端/客户端联调 |
-| Uvicorn | ASGI 运行器 | 使用 FastAPI 时需要，用于启动服务和监听端口 |
+| Go 1.22+ | 主开发语言 | 与模块三统一技术栈，Eino/Hertz 生态原生支持 |
+| Hertz | HTTP API 服务 | 字节跳动 CloudWeGo 生态高性能 HTTP 框架，与 Eino 天然兼容 |
+| Eino | AI 应用编排框架 | 接入火山云方舟 ChatModel / Embedding，实现语义识别和向量化 |
 | MySQL | 服务端主数据库 | 明确作为样本库、规则库、指纹库、语义特征库和版本库的持久化数据库 |
-| SQLAlchemy | ORM，推荐 | 统一管理样本、规则、版本等数据表，便于后续迁移和维护 |
-| PyMySQL | MySQL 驱动 | 纯 Python MySQL 驱动，安装简单，适合课程项目环境 |
-| Pydantic | 数据校验，推荐 | 约束 API 请求和响应结构；使用 FastAPI 时很自然 |
-| python-multipart | 文件上传 | 支持 FastAPI 接收 multipart 文件 |
-| jieba | 中文关键词抽取 | 适合从中文样本文档中提取高频业务词 |
-| simhash | 近似文本指纹 | 识别内容被轻微修改后的相似文件 |
-| python-docx / openpyxl / pypdf | 可选文档解析 | 支持 Word、Excel、PDF 文本提取 |
-| logging / loguru | 运行日志 | 记录服务启动、文件解析、规则生成、同步异常，便于调试 |
-| Eino | Go AI 应用开发框架，可选 | 如果语义识别部分由 Go 实现，可用 Eino 接入火山方舟 ChatModel / Embedding |
+| GORM | ORM | Go 生态最成熟 ORM，统一管理样本、规则、版本等数据表 |
+| go-sql-driver/mysql | MySQL 驱动 | Go 标准 MySQL 驱动 |
+| go-playground/validator | 请求校验 | 配合 Hertz 做入参绑定和校验 |
+| hertz-contrib / multipart | 文件上传 | Hertz 接收 multipart 上传文件 |
+| gojieba | 中文关键词抽取 | Go 版 jieba，适合从中文样本文档中提取高频业务词 |
+| simhash (Go) | 近似文本指纹 | 识别内容被轻微修改后的相似文件 |
+| excelize | Excel 文本提取 | Go 生态 xlsx 解析库 |
+| unidoc / gopdf | 可选 PDF 文本提取 | Go 生态 PDF 解析库 |
+| zap / logrus | 运行日志 | 记录服务启动、文件解析、规则生成、同步异常，便于调试 |
 
 ### 3.3 客户端技术
+
+客户端扫描脚本独立于服务端，可以继续使用 Python，与服务端通过 HTTP API 通信。
 
 | 技术 | 用途 | 选择原因 |
 |---|---|---|
@@ -125,11 +127,9 @@ flowchart LR
 
 | 技术 | 用途 | 使用阶段 |
 |---|---|---|
-| 火山云方舟 ChatModel / Embedding | 文档语义识别、语义向量相似度识别 | 建议纳入模块一语义能力 |
-| Eino | Go 侧编排 ChatModel 和 Embedding 调用 | 与 Go 模块协作时优先考虑 |
-| sentence-transformers / OpenAI Embeddings | 本地或其他云侧语义向量相似度识别 | 后续增强 |
-| FAISS / Chroma | 向量库 | 后续增强 |
-| pytesseract / PaddleOCR | 图片或扫描 PDF OCR | 后续增强 |
+| 火山云方舟 ChatModel / Embedding | 文档语义识别、语义向量相似度识别 | 已通过 Eino 集成，作为核心语义能力 |
+| Milvus / FAISS | 向量库 | 后续增强 |
+| PaddleOCR | 图片或扫描 PDF OCR | 后续增强 |
 | Redis | 规则版本缓存、短期同步状态缓存 | 后续增强 |
 
 ## 4. 服务端设计
@@ -142,17 +142,17 @@ sequenceDiagram
     participant API as 服务端 API
     participant Parser as 文本解析器
     participant Rule as 规则生成器
-    participant LLM as 大模型语义识别
+    participant LLM as Eino 大模型语义识别
     participant DB as 敏感文件库
 
     User->>API: 上传样本敏感文件
     API->>Parser: 按文件类型提取文本
     Parser-->>API: 返回清洗后的文本
     API->>Rule: 生成正则、关键词、组合规则、指纹
-    API->>LLM: 提取文档语义类型、风险说明、可选 embedding
+    API->>LLM: 通过 Eino 调用 ChatModel/Embedding
     Rule-->>API: 返回规则 JSON
     LLM-->>API: 返回语义标签、解释、向量特征
-    API->>DB: 保存样本、规则、指纹、语义特征、版本号
+    API->>DB: GORM 写入样本、规则、指纹、语义特征、版本号
     DB-->>API: 入库成功
     API-->>User: 返回 sensitive_file_id 和规则摘要
 ```
@@ -180,9 +180,9 @@ Content-Type: multipart/form-data
 | 文件类型 | MVP 处理方式 | 后续增强 |
 |---|---|---|
 | txt / csv / json / xml / md | 直接读取并做编码探测 | 增加乱码修复 |
-| docx | python-docx 提取段落和表格文本 | 支持老版 doc |
-| xlsx | openpyxl 提取单元格文本 | 增加公式和多 sheet 优化 |
-| pdf | pypdf 提取文本 | OCR 识别扫描件 |
+| docx | 可选，Go 生态 docx 解析库或调用 Python 微服务 | 支持老版 doc |
+| xlsx | excelize 提取单元格文本 | 增加公式和多 sheet 优化 |
+| pdf | gopdf / unidoc 提取文本 | OCR 识别扫描件 |
 | py / java / sql / config | 作为纯文本读取 | 增加代码密钥专项规则 |
 
 ### 4.3 规则生成策略
@@ -219,7 +219,7 @@ Content-Type: multipart/form-data
 从样本文本中抽取业务关键词：
 
 1. 对文本做清洗，去除空白、标点、停用词。
-2. 使用 `jieba.analyse.extract_tags` 提取 TF-IDF 关键词。
+2. 使用 `gojieba` 提取 TF-IDF 关键词。
 3. 合并用户填写的 `sensitive_type` 和 `description`。
 4. 过滤过短、过常见、无业务含义的词。
 5. 保存为关键词规则，并设置 `min_hits`。
@@ -272,7 +272,7 @@ Content-Type: multipart/form-data
 1. 使用 ChatModel 对样本文本进行分类，输出 `sensitive_type`、`risk_level`、语义标签和解释说明。
 2. 使用 Embedding 模型生成文本向量，写入 MySQL 或向量数据库，后续客户端或服务端可用于相似语义文件识别。
 
-如果语义能力由 Go 侧实现，可以使用 Eino 框架接入火山云方舟 ChatModel 和 Embedding；如果模块一主体仍用 Python，也可以将 Go/Eino 封装成一个独立语义识别服务，Python 服务端通过 HTTP 调用它。
+Eino 作为 Go 侧 AI 编排框架，可以直接在服务端代码中调用火山云方舟 ChatModel 和 Embedding，不需要额外跨语言通信。
 
 环境变量只保存占位名，真实密钥不得提交到仓库：
 
@@ -419,6 +419,8 @@ erDiagram
 
 ## 5. 客户端设计
 
+客户端扫描脚本使用 Python 实现，独立于服务端 Go 程序，通过 HTTP API 通信。
+
 ### 5.1 客户端核心流程
 
 ```mermaid
@@ -445,8 +447,8 @@ flowchart TD
 客户端可以先实现为命令行工具：
 
 ```bash
-python client.py sync --server http://127.0.0.1:8000
-python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8000
+python client.py sync --server http://127.0.0.1:8080
+python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8080
 python client.py list --sensitive-only
 ```
 
@@ -537,17 +539,7 @@ CREATE TABLE IF NOT EXISTS local_file_tags (
 
 ## 6. API 接口规划
 
-模块一可以用 Python 实现，只要对外提供稳定 HTTP API，就可以和 Go 编写的模块三对接。模块之间不应该直接依赖彼此的内部语言、类或函数，而应该通过 JSON API 传递数据。
-
-如果后续模块二、三、四主要使用 Go，推荐三种方案：
-
-| 方案 | 做法 | 适用情况 |
-|---|---|---|
-| Python 模块一独立服务 | 模块一继续使用 Python，暴露 HTTP API；Go 模块通过 API 调用 | 推荐。开发快，文档解析和 AI 生态更成熟，语言差异由 API 隔离 |
-| Go 网关 + Python 识别服务 | 用 Go 写统一网关或外层服务，内部调用 Python 识别能力 | 当老师或团队要求服务入口统一 Go 时使用 |
-| 全部迁移 Go | 使用 Gin/Hertz + Eino + Go 数据库库重写模块一 | 只有在团队强制统一 Go 或部署环境要求时再考虑 |
-
-结论：模块一用 Python 是可以的，关键是 API 契约要稳定。模块三用 Go 不要求模块一也必须 Go；后续只需要约定规则同步、敏感文件查询、扫描结果上报等接口格式即可。
+模块一服务端使用 Go + Hertz 实现，与模块三的 Go + Eino 统一技术栈，模块之间通过 JSON API 传递数据，语言完全一致，无需跨语言桥接。
 
 ### 6.1 服务端样本上传
 
@@ -615,18 +607,24 @@ POST /api/client/scan-results
 ```text
 SCU-project-model-1/
 ├── server/
-│   ├── app.py
-│   ├── api/
-│   │   ├── samples.py
-│   │   └── rules.py
+│   ├── main.go
+│   ├── router/
+│   │   ├── samples.go
+│   │   └── rules.go
 │   ├── core/
-│   │   ├── parser.py
-│   │   ├── rule_generator.py
-│   │   ├── fingerprint.py
-│   │   └── matcher.py
-│   ├── models.py
-│   ├── database.py
-│   └── requirements.txt
+│   │   ├── parser.go
+│   │   ├── rule_generator.go
+│   │   ├── fingerprint.go
+│   │   ├── semantic.go
+│   │   └── matcher.go
+│   ├── model/
+│   │   ├── sample.go
+│   │   ├── rule.go
+│   │   └── fingerprint.go
+│   ├── dal/
+│   │   └── mysql.go
+│   ├── go.mod
+│   └── go.sum
 ├── client/
 │   ├── client.py
 │   ├── sync.py
@@ -644,19 +642,21 @@ SCU-project-model-1/
 
 | 阶段 | 任务 | 交付物 |
 |---|---|---|
-| 第 1 阶段 | 搭建 FastAPI 服务端、MySQL 表结构、样本上传接口 | 可上传样本并入库 |
-| 第 2 阶段 | 实现文本解析、基础正则库、关键词抽取、SHA-256、SimHash | 可生成规则和指纹 |
-| 第 3 阶段 | 实现规则版本管理和客户端同步接口 | 客户端可拉取规则库 |
-| 第 4 阶段 | 实现客户端目录扫描、文本提取、规则匹配、本地 SQLite 标签库 | 可识别指定目录敏感文件 |
-| 第 5 阶段 | 准备测试样本、命令行演示、README 使用说明 | 可完整演示模块一闭环 |
+| 第 1 阶段 | 搭建 Hertz 服务端、MySQL 表结构、样本上传接口 | 可上传样本并入库 |
+| 第 2 阶段 | 实现文本解析、基础正则库、gojieba 关键词抽取、SHA-256、SimHash | 可生成规则和指纹 |
+| 第 3 阶段 | 集成 Eino 接入火山云方舟 ChatModel/Embedding，实现语义识别 | 可输出语义标签和向量 |
+| 第 4 阶段 | 实现规则版本管理和客户端同步接口 | 客户端可拉取规则库 |
+| 第 5 阶段 | 实现客户端目录扫描、文本提取、规则匹配、本地 SQLite 标签库 | 可识别指定目录敏感文件 |
+| 第 6 阶段 | 准备测试样本、命令行演示、README 使用说明 | 可完整演示模块一闭环 |
 
 ## 9. 测试方案
 
 ### 9.1 服务端测试
 
-- 上传 txt/docx/xlsx/pdf 样本，确认文本可提取。
+- 上传 txt/xlsx/pdf 样本，确认文本可提取。
 - 上传包含手机号、邮箱、API Key 的样本，确认正则规则命中。
 - 上传客户报价类文档，确认关键词规则生成合理。
+- 上传样本后确认 Eino 语义识别返回语义标签和解释。
 - 多次上传样本，确认规则版本号递增。
 
 ### 9.2 客户端测试
@@ -669,35 +669,42 @@ SCU-project-model-1/
 
 ## 10. 安装依赖
 
-### 10.1 服务端依赖
-
-建议 `server/requirements.txt`：
-
-```txt
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-python-multipart==0.0.9
-sqlalchemy==2.0.34
-pymysql==1.1.1
-pydantic==2.8.2
-jieba==0.42.1
-simhash==2.1.2
-python-docx==1.1.2
-openpyxl==3.1.5
-pypdf==4.3.1
-chardet==5.2.0
-loguru==0.7.2
-```
-
-安装命令：
+### 10.1 服务端依赖（Go）
 
 ```bash
 cd server
-python -m venv .venv
-.venv/Scripts/activate
-pip install -r requirements.txt
-uvicorn app:app --reload --host 127.0.0.1 --port 8000
+go mod init server
+go get github.com/cloudwego/hertz
+go get github.com/cloudwego/eino
+go get gorm.io/gorm
+go get gorm.io/driver/mysql
+go get github.com/go-sql-driver/mysql
+go get github.com/go-playground/validator/v10
+go get github.com/yanyiwu/gojieba
+go get github.com/cloudwego/hertz/pkg/app
+go get github.com/cloudwego/hertz/pkg/app/server
+go get github.com/cloudwego/hertz/pkg/protocol
+go get go.uber.org/zap
+go get github.com/xuri/excelize/v2
 ```
+
+启动命令：
+
+```bash
+cd server
+go run main.go
+# 默认监听 :8080
+```
+
+环境变量配置（语义识别必需）：
+
+```bash
+export ARK_CHAT_MODEL="your-chat-endpoint-id"
+export ARK_EMBEDDING_MODEL="your-embedding-endpoint-id"
+export ARK_API_KEY="your-api-key"
+```
+
+注意：真实 `ARK_API_KEY` 只能放在本机环境变量、`.env` 或部署平台密钥管理中，不能提交到 GitHub。
 
 ### 10.2 客户端依赖
 
@@ -707,7 +714,6 @@ uvicorn app:app --reload --host 127.0.0.1 --port 8000
 requests==2.32.3
 jieba==0.42.1
 simhash==2.1.2
-python-docx==1.1.2
 openpyxl==3.1.5
 pypdf==4.3.1
 chardet==5.2.0
@@ -722,37 +728,16 @@ cd client
 python -m venv .venv
 .venv/Scripts/activate
 pip install -r requirements.txt
-python client.py sync --server http://127.0.0.1:8000
-python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8000
+python client.py sync --server http://127.0.0.1:8080
+python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8080
 ```
-
-### 10.3 可选 Go / Eino 语义识别服务依赖
-
-如果团队决定使用 Eino 接入火山云方舟模型，可单独建立 `semantic-service/`，由 Go 提供语义识别接口，模块一 Python 服务端通过 HTTP 调用。
-
-环境变量示例：
-
-```bash
-export ARK_CHAT_MODEL="your-chat-endpoint-id"
-export ARK_EMBEDDING_MODEL="your-embedding-endpoint-id"
-export ARK_API_KEY="your-api-key"
-```
-
-Go 依赖安装示例：
-
-```bash
-go mod init semantic-service
-go get github.com/cloudwego/eino
-```
-
-注意：真实 `ARK_API_KEY` 只能放在本机环境变量、`.env` 或部署平台密钥管理中，不能提交到 GitHub。
 
 ## 11. 技术总结
 
-本模块采用“服务端生成规则 + 客户端本地识别”的架构。
+本模块采用"服务端 Go 生成规则 + 客户端 Python 本地识别"的架构。
 
-服务端推荐使用 Python、FastAPI、Uvicorn、MySQL、SQLAlchemy、PyMySQL、Pydantic、jieba、SimHash 等技术，将用户上传的敏感样本转化为规则库、指纹库和语义特征库，并通过版本化接口提供给客户端同步。客户端使用 Python、requests、SQLite、hashlib、re、jieba、SimHash 等技术，在终端本地扫描指定目录，通过 hash 精确匹配、SimHash 相似匹配、正则匹配、关键词匹配、组合规则评分和语义标签识别敏感文件。
+服务端使用 Go、Hertz、Eino、MySQL、GORM、gojieba、SimHash 等技术，将用户上传的敏感样本转化为规则库、指纹库和语义特征库，并通过版本化接口提供给客户端同步。Eino 作为 Go 侧 AI 编排框架，直接在服务端代码中调用火山云方舟 ChatModel / Embedding，无需跨语言通信。
 
-大模型语义识别用于补足 `dlpagent.md` 3.3.3 中的文档语义判断需求。若团队希望与 Go 技术栈靠拢，可使用 Eino 单独实现语义识别服务并接入火山云方舟 ChatModel / Embedding；模块一主体仍可继续使用 Python，通过 HTTP API 与 Go 模块二、三、四对接。
+客户端使用 Python、requests、SQLite、hashlib、re、jieba、SimHash 等技术，在终端本地扫描指定目录，通过 hash 精确匹配、SimHash 相似匹配、正则匹配、关键词匹配、组合规则评分和语义标签识别敏感文件。客户端与服务端通过 HTTP API 通信，语言差异由 API 隔离。
 
-该方案优点是实现成本低、演示闭环清晰、识别过程可解释，适合作为课程项目模块一的 MVP。后续如果需要提升识别准确率，可以加入 OCR、语义向量、向量数据库和增量目录监听等增强能力。
+该方案优点是与模块三统一 Go + Eino 技术栈，服务端无跨语言开销；客户端保留 Python 生态的文档处理便利性。适合作为课程项目模块一的 MVP。后续如果需要提升识别准确率，可以加入 OCR、语义向量、向量数据库和增量目录监听等增强能力。
