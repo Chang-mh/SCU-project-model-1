@@ -50,6 +50,58 @@ var businessKeywords = []string{
 	"漏洞", "运维账号", "数据库密码", "内部接口", "系统架构", "研发设计", "财报", "成本", "利润",
 }
 
+type combinedRuleTemplate struct {
+	Name       string
+	Keywords   []string
+	MinHits    int
+	Regex      string
+	RiskLevel  string
+	TriggerAny []string
+}
+
+var combinedRuleTemplates = []combinedRuleTemplate{
+	{
+		Name:       "客户报价组合识别",
+		Keywords:   []string{"客户名称", "报价", "合同金额", "联系人"},
+		MinHits:    2,
+		Regex:      `\d+(\.\d+)?万元`,
+		RiskLevel:  "high",
+		TriggerAny: []string{"客户", "报价", "合同金额", "联系人"},
+	},
+	{
+		Name:       "财务预算组合识别",
+		Keywords:   []string{"财务", "预算", "成本", "利润", "财报"},
+		MinHits:    2,
+		Regex:      `\d+(\.\d+)?(万元|元|%)`,
+		RiskLevel:  "high",
+		TriggerAny: []string{"财务", "预算", "成本", "利润", "财报"},
+	},
+	{
+		Name:       "薪资绩效组合识别",
+		Keywords:   []string{"薪资", "工资", "奖金", "绩效", "员工"},
+		MinHits:    2,
+		Regex:      `\d+(\.\d+)?(万元|元)`,
+		RiskLevel:  "high",
+		TriggerAny: []string{"薪资", "工资", "奖金", "绩效"},
+	},
+	{
+		Name:       "源码泄露组合识别",
+		Keywords:   []string{"源代码", "接口", "函数", "数据库密码", "内部接口"},
+		MinHits:    2,
+		Regex:      `(?i)(api[_-]?key|password|passwd|secret|token)[\s:=\"]+[^\s\"]{6,}`,
+		RiskLevel:  "critical",
+		TriggerAny: []string{"源代码", "接口", "数据库密码", "内部接口"},
+	},
+	{
+		Name:       "合同保密组合识别",
+		Keywords:   []string{"合同", "合同编号", "合同金额", "保密", "不得披露"},
+		MinHits:    2,
+		Regex:      `(?i)(合同编号|合同号|contract[ _-]?(no|id|number)).{0,12}[A-Za-z0-9\-_]{6,}`,
+		RiskLevel:  "high",
+		TriggerAny: []string{"合同", "合同编号", "合同金额", "保密"},
+	},
+}
+
 func GenerateRules(text, sensitiveType, riskLevel, description string) []RuleData {
 	if riskLevel == "" {
 		riskLevel = "medium"
@@ -95,17 +147,20 @@ func GenerateRules(text, sensitiveType, riskLevel, description string) []RuleDat
 		})
 	}
 
-	if containsAny(text, []string{"客户", "报价", "合同金额", "联系人"}) || containsAny(description, []string{"客户", "报价"}) {
+	for _, template := range combinedRuleTemplates {
+		if !containsAny(text, template.TriggerAny) && !containsAny(description, template.TriggerAny) && !containsAny(sensitiveType, template.TriggerAny) {
+			continue
+		}
 		rules = append(rules, RuleData{
-			RuleName:      "客户报价组合识别",
+			RuleName:      template.Name,
 			RuleType:      "combined",
 			SensitiveType: sensitiveType,
-			RiskLevel:     maxRisk(riskLevel, "high"),
+			RiskLevel:     maxRisk(riskLevel, template.RiskLevel),
 			Content: map[string]any{
 				"logic": "AND",
 				"conditions": []map[string]any{
-					{"type": "keyword", "value": []string{"客户名称", "报价", "合同金额", "联系人"}, "min_hits": 2},
-					{"type": "regex", "value": `\d+(\.\d+)?万元`},
+					{"type": "keyword", "value": template.Keywords, "min_hits": template.MinHits},
+					{"type": "regex", "value": template.Regex},
 				},
 			},
 		})

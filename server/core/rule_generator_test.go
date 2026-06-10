@@ -24,6 +24,44 @@ func TestGenerateRulesDetectsCustomerQuoteCombinedRule(t *testing.T) {
 	}
 }
 
+func TestGenerateRulesDetectsTemplateCombinedRules(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "finance",
+			text: "财务预算资料：本季度成本120万元，预计利润率20%，财报未公开",
+			want: "财务预算组合识别",
+		},
+		{
+			name: "salary",
+			text: "员工薪资明细：工资18000元，奖金5000元，绩效等级A",
+			want: "薪资绩效组合识别",
+		},
+		{
+			name: "source code",
+			text: "源代码包含内部接口配置，api_key = abcdefghijklmnop，数据库密码需保密",
+			want: "源码泄露组合识别",
+		},
+		{
+			name: "contract",
+			text: "保密合同，合同编号 HT-2026-ABC001，合同金额80万元，不得披露",
+			want: "合同保密组合识别",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			rules := GenerateRules(tt.text, "业务资料", "medium", "")
+			if !hasRule(rules, "combined", tt.want) {
+				t.Fatalf("GenerateRules() missing combined rule %q in %#v", tt.want, rules)
+			}
+		})
+	}
+}
+
 func TestAnalyzeSemanticFallsBackToRules(t *testing.T) {
 	t.Setenv(EnvArkAPIKey, "")
 	t.Setenv(EnvArkEndpointID, "")
