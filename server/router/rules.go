@@ -25,14 +25,17 @@ import (
 )
 
 type SampleUploadResponse struct {
-	SensitiveFileID     string         `json:"sensitive_file_id"`
-	FileName            string         `json:"file_name"`
-	SensitiveType       string         `json:"sensitive_type"`
-	RiskLevel           string         `json:"risk_level"`
-	RuleVersion         int            `json:"rule_version"`
-	GeneratedRulesCount int            `json:"generated_rules_count"`
-	Fingerprint         map[string]any `json:"fingerprint"`
-	Explanation         string         `json:"explanation"`
+	SensitiveFileID     string          `json:"sensitive_file_id"`
+	FileName            string          `json:"file_name"`
+	SensitiveType       string          `json:"sensitive_type"`
+	RiskLevel           string          `json:"risk_level"`
+	RuleVersion         int             `json:"rule_version"`
+	GeneratedRulesCount int             `json:"generated_rules_count"`
+	GeneratedRules      []core.RuleData `json:"generated_rules"`
+	EmbeddingID         string          `json:"embedding_id"`
+	SemanticLabels      []string        `json:"semantic_labels"`
+	Fingerprint         map[string]any  `json:"fingerprint"`
+	Explanation         string          `json:"explanation"`
 }
 
 type RuleSyncResponse struct {
@@ -187,15 +190,19 @@ func persistPreparedUpload(tx *gorm.DB, item preparedUpload, version int) error 
 	return nil
 }
 
-func uploadResponse(item preparedUpload, version int) map[string]any {
-	return map[string]any{
-		"sensitive_file_id":     item.FileID,
-		"file_name":             item.FileName,
-		"sensitive_type":        item.Semantic.SensitiveType,
-		"risk_level":            item.Semantic.RiskLevel,
-		"rule_version":          version,
-		"generated_rules_count": len(item.Rules),
-		"fingerprint":           map[string]any{"sha256": item.SHA256, "simhash": item.SimHash},
+func sampleUploadResponse(item preparedUpload, version int) SampleUploadResponse {
+	return SampleUploadResponse{
+		SensitiveFileID:     item.FileID,
+		FileName:            item.FileName,
+		SensitiveType:       item.Semantic.SensitiveType,
+		RiskLevel:           item.Semantic.RiskLevel,
+		RuleVersion:         version,
+		GeneratedRulesCount: len(item.Rules),
+		GeneratedRules:      item.Rules,
+		EmbeddingID:         item.Semantic.EmbeddingID,
+		SemanticLabels:      item.Semantic.SemanticLabels,
+		Fingerprint:         map[string]any{"sha256": item.SHA256, "simhash": item.SimHash},
+		Explanation:         item.Semantic.Explanation,
 	}
 }
 
@@ -241,16 +248,7 @@ func UploadSample(ctx *app.RequestContext) {
 		return
 	}
 
-	resp := SampleUploadResponse{
-		SensitiveFileID:     item.FileID,
-		FileName:            item.FileName,
-		SensitiveType:       item.Semantic.SensitiveType,
-		RiskLevel:           item.Semantic.RiskLevel,
-		RuleVersion:         newVersion,
-		GeneratedRulesCount: len(item.Rules),
-		Fingerprint:         map[string]any{"sha256": item.SHA256, "simhash": item.SimHash},
-		Explanation:         item.Semantic.Explanation,
-	}
+	resp := sampleUploadResponse(item, newVersion)
 
 	zap.L().Info("样本上传成功",
 		zap.String("file_id", item.FileID),
@@ -418,7 +416,7 @@ func UploadSamplesBatch(ctx *app.RequestContext) {
 		items = append(items, prepareUpload(fh.Filename, data, sensitiveType, riskLevel, description))
 	}
 
-	results := make([]map[string]any, 0, len(items))
+	results := make([]SampleUploadResponse, 0, len(items))
 	var newVersion int
 	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
 		version, err := createRuleVersion(tx, "batch_upload")
@@ -439,7 +437,7 @@ func UploadSamplesBatch(ctx *app.RequestContext) {
 	}
 
 	for _, item := range items {
-		results = append(results, uploadResponse(item, newVersion))
+		results = append(results, sampleUploadResponse(item, newVersion))
 	}
 
 	resp := map[string]any{
@@ -598,9 +596,9 @@ func UploadZip(ctx *app.RequestContext) {
 		return
 	}
 
-	results := make([]map[string]any, 0, len(items))
+	results := make([]SampleUploadResponse, 0, len(items))
 	for _, item := range items {
-		results = append(results, uploadResponse(item, newVersion))
+		results = append(results, sampleUploadResponse(item, newVersion))
 	}
 
 	ctx.JSON(consts.StatusOK, map[string]any{"total": len(results), "results": results})
