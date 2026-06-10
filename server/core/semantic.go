@@ -1,10 +1,15 @@
 package core
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -19,21 +24,24 @@ import (
 var semanticPromptTemplate string
 
 type SemanticResult struct {
-	SemanticLabels []string `json:"semantic_labels"`
-	SensitiveType  string   `json:"sensitive_type"`
-	RiskLevel      string   `json:"risk_level"`
-	EmbeddingID    string   `json:"embedding_id"`
-	ModelName      string   `json:"model_name"`
-	Explanation    string   `json:"explanation"`
+	SemanticLabels []string  `json:"semantic_labels"`
+	SensitiveType  string    `json:"sensitive_type"`
+	RiskLevel      string    `json:"risk_level"`
+	EmbeddingID    string    `json:"embedding_id"`
+	Embedding      []float64 `json:"embedding,omitempty"`
+	ModelName      string    `json:"model_name"`
+	Explanation    string    `json:"explanation"`
 }
 
 // 火山引擎方舟大模型配置
 const (
-	EnvArkAPIKey     = "ARK_API_KEY"     // 火山方舟 API Key, 替换 xxxxx 为真实 key
-	EnvArkBaseURL    = "ARK_BASE_URL"    // 可选, 默认方舟 OpenAI 兼容端点
-	EnvArkEndpointID = "ARK_ENDPOINT_ID" // 方舟推理接入点 ID, 替换 xxxxx 为真实 endpoint
-	DefaultArkURL    = "https://ark.cn-beijing.volces.com/api/v3"
-	MaxTextForLLM    = 4000 // 发送给大模型的最大字符数
+	EnvArkAPIKey         = "ARK_API_KEY"         // 火山方舟 API Key, 替换 xxxxx 为真实 key
+	EnvArkBaseURL        = "ARK_BASE_URL"        // 可选, 默认方舟 OpenAI 兼容端点
+	EnvArkChatModel      = "ARK_CHAT_MODEL"      // 方舟 ChatModel 接入点/模型 ID
+	EnvArkEmbeddingModel = "ARK_EMBEDDING_MODEL" // 方舟 Embedding 接入点/模型 ID
+	EnvArkEndpointID     = "ARK_ENDPOINT_ID"     // 兼容旧配置: 方舟 ChatModel 接入点 ID
+	DefaultArkURL        = "https://ark.cn-beijing.volces.com/api/v3"
+	MaxTextForLLM        = 4000 // 发送给大模型的最大字符数
 )
 
 var (
@@ -41,6 +49,22 @@ var (
 	chatModelOnce sync.Once
 	chatModelInit bool
 )
+
+func getEnvWithFallback(primary, fallback string) string {
+	value := os.Getenv(primary)
+	if value != "" && value != "xxxxx" {
+		return value
+	}
+	return os.Getenv(fallback)
+}
+
+func arkBaseURL() string {
+	baseURL := os.Getenv(EnvArkBaseURL)
+	if baseURL == "" {
+		return DefaultArkURL
+	}
+	return strings.TrimRight(baseURL, "/")
+}
 
 func initChatModel() {
 	chatModelOnce.Do(func() {
@@ -50,14 +74,11 @@ func initChatModel() {
 				zap.String("env_var", EnvArkAPIKey))
 			return
 		}
-		baseURL := os.Getenv(EnvArkBaseURL)
-		if baseURL == "" {
-			baseURL = DefaultArkURL
-		}
-		endpointID := os.Getenv(EnvArkEndpointID)
+		baseURL := arkBaseURL()
+		endpointID := getEnvWithFallback(EnvArkChatModel, EnvArkEndpointID)
 		if endpointID == "" || endpointID == "xxxxx" {
-			zap.L().Error("火山方舟 Endpoint ID 未配置, 请设置 ARK_ENDPOINT_ID",
-				zap.String("env_var", EnvArkEndpointID))
+			zap.L().Error("火山方舟 ChatModel 未配置, 请设置 ARK_CHAT_MODEL 或 ARK_ENDPOINT_ID",
+				zap.String("env_var", EnvArkChatModel))
 			return
 		}
 
@@ -87,15 +108,20 @@ func IsLLMReady() bool {
 func AnalyzeSemantic(text, sensitiveType, riskLevel string) SemanticResult {
 	initChatModel()
 
+	var result SemanticResult
 	if chatModelInit && chatModel != nil {
-		result, err := analyzeWithLLM(text, sensitiveType, riskLevel)
+		llmResult, err := analyzeWithLLM(text, sensitiveType, riskLevel)
 		if err == nil {
-			return result
+			result = llmResult
+		} else {
+			zap.L().Warn("大模型语义识别失败, 降级到规则推理", zap.Error(err))
 		}
-		zap.L().Warn("大模型语义识别失败, 降级到规则推理", zap.Error(err))
 	}
-
-	return analyzeWithRules(text, sensitiveType, riskLevel)
+	if result.SensitiveType == "" {
+		result = analyzeWithRules(text, sensitiveType, riskLevel)
+	}
+	attachEmbedding(text, &result)
+	return result
 }
 
 func analyzeWithLLM(text, sensitiveType, riskLevel string) (SemanticResult, error) {
@@ -167,6 +193,81 @@ func parseLLMResponse(content, sensitiveType, riskLevel string) (SemanticResult,
 		ModelName:      os.Getenv(EnvArkEndpointID),
 		Explanation:    resp.Explanation,
 	}, nil
+}
+
+func attachEmbedding(text string, result *SemanticResult) {
+	vector, modelName, err := GenerateEmbedding(text)
+	if err != nil {
+		if err != errEmbeddingNotConfigured {
+			zap.L().Warn("生成语义向量失败", zap.Error(err))
+		}
+		return
+	}
+	result.Embedding = vector
+	result.EmbeddingID = embeddingID(modelName, text)
+}
+
+var errEmbeddingNotConfigured = fmt.Errorf("embedding model not configured")
+
+func GenerateEmbedding(text string) ([]float64, string, error) {
+	apiKey := os.Getenv(EnvArkAPIKey)
+	modelName := os.Getenv(EnvArkEmbeddingModel)
+	if apiKey == "" || apiKey == "xxxxx" || modelName == "" || modelName == "xxxxx" {
+		return nil, "", errEmbeddingNotConfigured
+	}
+	truncated := text
+	if len([]rune(truncated)) > MaxTextForLLM {
+		truncated = string([]rune(truncated)[:MaxTextForLLM])
+	}
+
+	payload := map[string]any{
+		"model": modelName,
+		"input": truncated,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, modelName, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, arkBaseURL()+"/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, modelName, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, modelName, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, modelName, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, modelName, fmt.Errorf("embedding request failed: status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+
+	var parsed struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, modelName, err
+	}
+	if len(parsed.Data) == 0 || len(parsed.Data[0].Embedding) == 0 {
+		return nil, modelName, fmt.Errorf("embedding response missing vector")
+	}
+	return parsed.Data[0].Embedding, modelName, nil
+}
+
+func embeddingID(modelName, text string) string {
+	sum := sha256.Sum256([]byte(modelName + "\x00" + text))
+	return "emb_" + hex.EncodeToString(sum[:8])
 }
 
 // 规则推理降级方案

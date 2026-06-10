@@ -152,12 +152,20 @@ func saveSemanticFeature(tx *gorm.DB, sampleID string, semantic core.SemanticRes
 	if err != nil {
 		return fmt.Errorf("序列化语义标签失败: %w", err)
 	}
+	embedding := "[]"
+	if len(semantic.Embedding) > 0 {
+		data, err := json.Marshal(semantic.Embedding)
+		if err != nil {
+			return fmt.Errorf("序列化语义向量失败: %w", err)
+		}
+		embedding = string(data)
+	}
 	feature := model.SemanticFeature{
 		ID:             genSemanticID(),
 		SampleID:       sampleID,
 		SemanticLabels: string(labels),
 		EmbeddingID:    semantic.EmbeddingID,
-		Embedding:      "[]",
+		Embedding:      embedding,
 		ModelName:      semantic.ModelName,
 		CreatedAt:      time.Now(),
 	}
