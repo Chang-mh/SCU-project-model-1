@@ -10,11 +10,11 @@ def compute_sha256(data: bytes) -> str:
 
 
 def compute_simhash(text: str) -> str:
-    """简化 SimHash：按词/字组合生成 64-bit 指纹"""
-    tokens = _tokenize(text)
+    """SimHash：与服务端 (FNV-1a + 2-char Chinese tokenization) 保持一致"""
+    tokens = _tokenize_for_simhash(text)
     vector = [0] * 64
     for token in tokens:
-        h = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16)
+        h = _fnv1a_64(token.lower().encode("utf-8"))
         for i in range(64):
             if h & (1 << i):
                 vector[i] += 1
@@ -25,6 +25,14 @@ def compute_simhash(text: str) -> str:
         if vector[i] > 0:
             result |= 1 << i
     return f"{result:016x}"
+
+def _fnv1a_64(data: bytes) -> int:
+    """FNV-1a 64-bit hash, 与 Go 的 hash/fnv.New64a() 一致"""
+    h = 14695981039346656037
+    for b in data:
+        h ^= b
+        h = (h * 1099511628211) % (1 << 64)
+    return h
 
 
 def hamming_distance(a: str, b: str) -> int:
@@ -194,22 +202,22 @@ def score_to_risk(score: int) -> str:
     return "info"
 
 
-def _tokenize(text: str) -> list:
-    """简易中文+英文分词"""
-    tokens = []
+def _tokenize_for_simhash(text: str) -> list:
+    """中文 2 字符 bigram + 英文整词分词，与服务端 tokenizeForHash 一致"""
+    words = []
     current = []
-    for ch in text:
-        if "一" <= ch <= "鿿":
-            if current:
-                tokens.append("".join(current))
-                current = []
-            tokens.append(ch)
-        elif ch.isalnum():
-            current.append(ch)
-        else:
-            if current:
-                tokens.append("".join(current))
-                current = []
+    def flush():
+        if current:
+            words.append("".join(current))
+            current.clear()
+    for r in text:
+        is_cjk = "\u4e00" <= r <= "\u9fff"
+        if r.isalpha() or r.isdigit() or is_cjk:
+            current.append(r)
+            if is_cjk and len(current) >= 2:
+                flush()
+            continue
+        flush()
     if current:
-        tokens.append("".join(current))
-    return tokens
+        words.append("".join(current))
+    return words

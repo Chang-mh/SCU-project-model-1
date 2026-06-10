@@ -68,6 +68,31 @@ func genRuleID() string {
 	return "rule_" + hex.EncodeToString(b)
 }
 
+func genSemanticID() string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return "sem_" + hex.EncodeToString(b)
+}
+
+func saveSemanticFeature(sampleID string, semantic core.SemanticResult) {
+	labels, _ := json.Marshal(semantic.SemanticLabels)
+	feature := model.SemanticFeature{
+		ID:             genSemanticID(),
+		SampleID:       sampleID,
+		SemanticLabels: string(labels),
+		EmbeddingID:    semantic.EmbeddingID,
+		Embedding:      "[]",
+		ModelName:      semantic.ModelName,
+		CreatedAt:      time.Now(),
+	}
+	if feature.ModelName == "" {
+		feature.ModelName = "rule-fallback"
+	}
+	if err := dal.DB.Create(&feature).Error; err != nil {
+		zap.L().Warn("保存语义特征失败", zap.String("sample_id", sampleID), zap.Error(err))
+	}
+}
+
 func UploadSample(ctx *app.RequestContext) {
 	fileHeader, err := ctx.FormFile("file")
 	if err != nil {
@@ -153,6 +178,7 @@ func UploadSample(ctx *app.RequestContext) {
 		TextLength: len(text),
 	}
 	dal.DB.Create(&fp)
+	saveSemanticFeature(fileID, semantic)
 
 	ver := model.RuleVersion{
 		Version:    newVersion,
@@ -375,6 +401,7 @@ func UploadSamplesBatch(ctx *app.RequestContext) {
 			})
 		}
 		dal.DB.Create(&model.FileFingerprint{SampleID: fileID, SHA256: sha256, SimHash: simhash, TextLength: len(text)})
+		saveSemanticFeature(fileID, semantic)
 		dal.DB.Create(&model.RuleVersion{Version: newVersion, ChangeType: "batch_upload", CreatedAt: time.Now()})
 
 		results = append(results, map[string]any{
@@ -561,6 +588,7 @@ func UploadZip(ctx *app.RequestContext) {
 			})
 		}
 		dal.DB.Create(&model.FileFingerprint{SampleID: fileID, SHA256: sha256, SimHash: simhash, TextLength: len(text)})
+		saveSemanticFeature(fileID, semantic)
 		dal.DB.Create(&model.RuleVersion{Version: newVersion, ChangeType: "zip_upload", CreatedAt: time.Now()})
 		results = append(results, map[string]any{
 			"sensitive_file_id":     fileID,
