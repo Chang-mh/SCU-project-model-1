@@ -14,7 +14,7 @@ type GeneratedRule struct {
 }
 
 type RuleVersion struct {
-	Version    int       `gorm:"primaryKey" json:"version"`
+	Version    int       `gorm:"primaryKey;autoIncrement" json:"version"`
 	ChangeType string    `gorm:"size:32" json:"change_type"`
 	CreatedAt  time.Time `json:"created_at"`
 }

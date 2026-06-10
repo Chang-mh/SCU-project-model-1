@@ -109,12 +109,12 @@ func prepareUpload(fileName string, data []byte, sensitiveType, riskLevel, descr
 	}
 }
 
-func nextRuleVersion(tx *gorm.DB) (int, error) {
-	var version int
-	if err := tx.Raw("SELECT COALESCE(MAX(version), 0) FROM rule_versions").Scan(&version).Error; err != nil {
-		return 0, fmt.Errorf("查询规则版本失败: %w", err)
+func createRuleVersion(tx *gorm.DB, changeType string) (int, error) {
+	ver := model.RuleVersion{ChangeType: changeType, CreatedAt: time.Now()}
+	if err := tx.Create(&ver).Error; err != nil {
+		return 0, fmt.Errorf("保存规则版本失败: %w", err)
 	}
-	return version + 1, nil
+	return ver.Version, nil
 }
 
 func saveSemanticFeature(tx *gorm.DB, sampleID string, semantic core.SemanticResult) error {
@@ -226,21 +226,13 @@ func UploadSample(ctx *app.RequestContext) {
 	item := prepareUpload(fileHeader.Filename, data, sensitiveType, riskLevel, description)
 	var newVersion int
 	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
-		version, err := nextRuleVersion(tx)
+		version, err := createRuleVersion(tx, "upload")
 		if err != nil {
 			return err
 		}
 		newVersion = version
 		if err := persistPreparedUpload(tx, item, newVersion); err != nil {
 			return err
-		}
-		ver := model.RuleVersion{
-			Version:    newVersion,
-			ChangeType: "upload",
-			CreatedAt:  time.Now(),
-		}
-		if err := tx.Create(&ver).Error; err != nil {
-			return fmt.Errorf("保存规则版本失败: %w", err)
 		}
 		return nil
 	}); err != nil {
@@ -429,7 +421,7 @@ func UploadSamplesBatch(ctx *app.RequestContext) {
 	results := make([]map[string]any, 0, len(items))
 	var newVersion int
 	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
-		version, err := nextRuleVersion(tx)
+		version, err := createRuleVersion(tx, "batch_upload")
 		if err != nil {
 			return err
 		}
@@ -438,10 +430,6 @@ func UploadSamplesBatch(ctx *app.RequestContext) {
 			if err := persistPreparedUpload(tx, item, newVersion); err != nil {
 				return fmt.Errorf("文件 %s 入库失败: %w", item.FileName, err)
 			}
-		}
-		ver := model.RuleVersion{Version: newVersion, ChangeType: "batch_upload", CreatedAt: time.Now()}
-		if err := tx.Create(&ver).Error; err != nil {
-			return fmt.Errorf("保存规则版本失败: %w", err)
 		}
 		return nil
 	}); err != nil {
@@ -593,7 +581,7 @@ func UploadZip(ctx *app.RequestContext) {
 
 	var newVersion int
 	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
-		version, err := nextRuleVersion(tx)
+		version, err := createRuleVersion(tx, "zip_upload")
 		if err != nil {
 			return err
 		}
@@ -602,10 +590,6 @@ func UploadZip(ctx *app.RequestContext) {
 			if err := persistPreparedUpload(tx, item, newVersion); err != nil {
 				return fmt.Errorf("文件 %s 入库失败: %w", item.FileName, err)
 			}
-		}
-		ver := model.RuleVersion{Version: newVersion, ChangeType: "zip_upload", CreatedAt: time.Now()}
-		if err := tx.Create(&ver).Error; err != nil {
-			return fmt.Errorf("保存规则版本失败: %w", err)
 		}
 		return nil
 	}); err != nil {
