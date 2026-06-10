@@ -54,6 +54,14 @@ class LocalDB:
                 simhash TEXT
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cached_semantic_labels (
+                sensitive_file_id TEXT PRIMARY KEY,
+                semantic_labels TEXT,
+                embedding_id TEXT,
+                model_name TEXT
+            )
+        """)
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str):
@@ -77,7 +85,7 @@ class LocalDB:
         )
         self.conn.commit()
 
-    def save_rules(self, rules, fingerprints):
+    def save_rules(self, rules, fingerprints, semantic_labels=None):
         cursor = self.conn.cursor()
         for r in rules:
             import json
@@ -89,6 +97,12 @@ class LocalDB:
             cursor.execute(
                 "INSERT OR REPLACE INTO cached_fingerprints (sensitive_file_id, sha256, simhash) VALUES (?, ?, ?)",
                 (f.get("sensitive_file_id"), f.get("sha256"), f.get("simhash")),
+            )
+        for s in semantic_labels or []:
+            import json
+            cursor.execute(
+                "INSERT OR REPLACE INTO cached_semantic_labels (sensitive_file_id, semantic_labels, embedding_id, model_name) VALUES (?, ?, ?, ?)",
+                (s.get("sensitive_file_id"), json.dumps(s.get("semantic_labels", []), ensure_ascii=False), s.get("embedding_id"), s.get("model_name")),
             )
         self.conn.commit()
 
@@ -114,6 +128,19 @@ class LocalDB:
             {"sensitive_file_id": row["sensitive_file_id"], "sha256": row["sha256"], "simhash": row["simhash"]}
             for row in cursor.fetchall()
         ]
+
+    def load_semantic_labels(self):
+        import json
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT sensitive_file_id, semantic_labels, embedding_id, model_name FROM cached_semantic_labels")
+        labels = {}
+        for row in cursor.fetchall():
+            labels[row["sensitive_file_id"]] = {
+                "semantic_labels": json.loads(row["semantic_labels"]) if row["semantic_labels"] else [],
+                "embedding_id": row["embedding_id"],
+                "model_name": row["model_name"],
+            }
+        return labels
 
     def upsert_file_tag(
         self,

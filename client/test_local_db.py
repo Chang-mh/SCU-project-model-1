@@ -63,6 +63,28 @@ class LocalDBTest(unittest.TestCase):
         self.assertTrue(all(isinstance(row, dict) for row in all_rows))
         self.assertEqual(len(sensitive_rows), 1)
         self.assertEqual(sensitive_rows[0]["file_path"], "/tmp/secret.txt")
+    def test_save_and_load_semantic_labels(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "tags.db"
+            db = LocalDB(str(db_path))
+            try:
+                db.save_rules(
+                    [],
+                    [],
+                    [{
+                        "sensitive_file_id": "file_1",
+                        "semantic_labels": ["客户名单", "报价信息"],
+                        "embedding_id": "emb_1",
+                        "model_name": "rule-fallback",
+                    }],
+                )
+                labels = db.load_semantic_labels()
+            finally:
+                db.close()
+
+        self.assertEqual(labels["file_1"]["semantic_labels"], ["客户名单", "报价信息"])
+        self.assertEqual(labels["file_1"]["embedding_id"], "emb_1")
+        self.assertEqual(labels["file_1"]["model_name"], "rule-fallback")
 
 
 if __name__ == "__main__":

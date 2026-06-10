@@ -26,12 +26,20 @@ def sync_rules(server_url: str, db: LocalDB) -> dict:
     latest_version = data.get("latest_version", 0)
     rules = data.get("rules", [])
     fingerprints = data.get("fingerprints", [])
+    semantic_labels = data.get("semantic_labels", [])
 
-    if not rules and latest_version <= local_version:
+    if not rules and not fingerprints and not semantic_labels and latest_version <= local_version:
         logger.info("规则已是最新，无需更新")
         return {"success": True, "updated": False, "version": local_version}
 
-    db.save_rules(rules, fingerprints)
+    db.save_rules(rules, fingerprints, semantic_labels)
     db.update_local_version(latest_version)
-    logger.info(f"规则同步成功: 新增{len(rules)}条规则, {len(fingerprints)}条指纹, 版本={latest_version}")
-    return {"success": True, "updated": True, "version": latest_version, "rules_count": len(rules), "fingerprints_count": len(fingerprints)}
+    logger.info(f"规则同步成功: 新增{len(rules)}条规则, {len(fingerprints)}条指纹, {len(semantic_labels)}条语义标签, 版本={latest_version}")
+    return {
+        "success": True,
+        "updated": True,
+        "version": latest_version,
+        "rules_count": len(rules),
+        "fingerprints_count": len(fingerprints),
+        "semantic_labels_count": len(semantic_labels),
+    }

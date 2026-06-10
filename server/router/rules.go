@@ -39,10 +39,11 @@ type SampleUploadResponse struct {
 }
 
 type RuleSyncResponse struct {
-	LatestVersion int          `json:"latest_version"`
-	FullSync      bool         `json:"full_sync"`
-	Rules         []RuleResp   `json:"rules"`
-	Fingerprints  []FingerResp `json:"fingerprints"`
+	LatestVersion  int            `json:"latest_version"`
+	FullSync       bool           `json:"full_sync"`
+	Rules          []RuleResp     `json:"rules"`
+	Fingerprints   []FingerResp   `json:"fingerprints"`
+	SemanticLabels []SemanticResp `json:"semantic_labels"`
 }
 
 type RuleResp struct {
@@ -57,6 +58,32 @@ type FingerResp struct {
 	SensitiveFileID string `json:"sensitive_file_id"`
 	SHA256          string `json:"sha256"`
 	SimHash         string `json:"simhash"`
+}
+
+type SemanticResp struct {
+	SensitiveFileID string   `json:"sensitive_file_id"`
+	SemanticLabels  []string `json:"semantic_labels"`
+	EmbeddingID     string   `json:"embedding_id"`
+	ModelName       string   `json:"model_name"`
+}
+
+func buildSemanticResps(features []model.SemanticFeature) []SemanticResp {
+	resps := make([]SemanticResp, 0, len(features))
+	for _, feature := range features {
+		var labels []string
+		if feature.SemanticLabels != "" {
+			if err := json.Unmarshal([]byte(feature.SemanticLabels), &labels); err != nil {
+				zap.L().Warn("解析语义标签失败", zap.String("sample_id", feature.SampleID), zap.Error(err))
+			}
+		}
+		resps = append(resps, SemanticResp{
+			SensitiveFileID: feature.SampleID,
+			SemanticLabels:  labels,
+			EmbeddingID:     feature.EmbeddingID,
+			ModelName:       feature.ModelName,
+		})
+	}
+	return resps
 }
 
 func genFileID() string {
@@ -289,6 +316,9 @@ func SyncRules(ctx *app.RequestContext) {
 	var fingerprints []model.FileFingerprint
 	dal.DB.Find(&fingerprints)
 
+	var semanticFeatures []model.SemanticFeature
+	dal.DB.Find(&semanticFeatures)
+
 	ruleResps := make([]RuleResp, 0, len(rules))
 	for _, r := range rules {
 		var content map[string]any
@@ -312,10 +342,11 @@ func SyncRules(ctx *app.RequestContext) {
 	}
 
 	resp := RuleSyncResponse{
-		LatestVersion: latest.Version,
-		FullSync:      clientVersion == 0,
-		Rules:         ruleResps,
-		Fingerprints:  fingerResps,
+		LatestVersion:  latest.Version,
+		FullSync:       clientVersion == 0,
+		Rules:          ruleResps,
+		Fingerprints:   fingerResps,
+		SemanticLabels: buildSemanticResps(semanticFeatures),
 	}
 	ctx.JSON(consts.StatusOK, resp)
 }
@@ -616,11 +647,12 @@ func BatchSyncRules(ctx *app.RequestContext) {
 	for _, r := range req.Rules {
 		resp := getRuleSet(r.Version)
 		results = append(results, map[string]any{
-			"sensitive_type": r.SensitiveType,
-			"version":        r.Version,
-			"latest_version": resp.LatestVersion,
-			"rules":          resp.Rules,
-			"fingerprints":   resp.Fingerprints,
+			"sensitive_type":  r.SensitiveType,
+			"version":         r.Version,
+			"latest_version":  resp.LatestVersion,
+			"rules":           resp.Rules,
+			"fingerprints":    resp.Fingerprints,
+			"semantic_labels": resp.SemanticLabels,
 		})
 	}
 	ctx.JSON(consts.StatusOK, map[string]any{"results": results})
@@ -643,6 +675,9 @@ func getRuleSet(clientVersion int) RuleSyncResponse {
 	var fingerprints []model.FileFingerprint
 	dal.DB.Find(&fingerprints)
 
+	var semanticFeatures []model.SemanticFeature
+	dal.DB.Find(&semanticFeatures)
+
 	ruleResps := make([]RuleResp, 0, len(rules))
 	for _, r := range rules {
 		var content map[string]any
@@ -656,7 +691,7 @@ func getRuleSet(clientVersion int) RuleSyncResponse {
 	for _, f := range fingerprints {
 		fingerResps = append(fingerResps, FingerResp{SensitiveFileID: f.SampleID, SHA256: f.SHA256, SimHash: f.SimHash})
 	}
-	return RuleSyncResponse{LatestVersion: latest.Version, FullSync: clientVersion == 0, Rules: ruleResps, Fingerprints: fingerResps}
+	return RuleSyncResponse{LatestVersion: latest.Version, FullSync: clientVersion == 0, Rules: ruleResps, Fingerprints: fingerResps, SemanticLabels: buildSemanticResps(semanticFeatures)}
 }
 
 func ContentScan(ctx *app.RequestContext) {

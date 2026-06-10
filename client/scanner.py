@@ -93,12 +93,13 @@ def scan_directory(path: str, db: LocalDB) -> list[dict]:
 
     rules = db.load_rules()
     fingerprints = db.load_fingerprints()
-    logger.info(f"加载本地规则: {len(rules)} 条, 指纹: {len(fingerprints)} 条")
+    semantic_labels = db.load_semantic_labels()
+    logger.info(f"加载本地规则: {len(rules)} 条, 指纹: {len(fingerprints)} 条, 语义标签: {len(semantic_labels)} 条")
 
     results = []
     for file_path in iter_files(root):
         try:
-            result = scan_file(file_path, rules, fingerprints)
+            result = scan_file(file_path, rules, fingerprints, semantic_labels)
             db.upsert_file_tag(
                 file_path=result.file_path,
                 file_hash=result.file_hash,
@@ -136,18 +137,22 @@ def iter_files(root: Path) -> Iterable[Path]:
         yield file_path
 
 
-def scan_file(file_path: Path, rules: list, fingerprints: list) -> ScanResult:
+def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None) -> ScanResult:
     data = file_path.read_bytes()
     sha256 = compute_sha256(data)
 
     sha_hit = match_sha256(sha256, fingerprints)
+    semantic_labels = semantic_labels or {}
     if sha_hit:
+        label_detail = semantic_labels.get(sha_hit.get("sensitive_file_id"), {})
         detail = {
             "sha256_hit": True,
             "simhash_hit": False,
             "regex_hits": [],
             "keyword_hits": [],
             "combined_hits": [],
+            "semantic_labels": label_detail.get("semantic_labels", []),
+            "embedding_id": label_detail.get("embedding_id"),
         }
         return ScanResult(str(file_path), sha256, True, "样本指纹命中", "high", sha_hit.get("sensitive_file_id"), 100, "sensitive", detail)
 
@@ -163,6 +168,7 @@ def scan_file(file_path: Path, rules: list, fingerprints: list) -> ScanResult:
     risk_level = score_to_risk(score)
     sensitive_type = infer_sensitive_type(regex_hits, keyword_hits, combined_hits, rules)
     sensitive_file_id = sim_hit.get("sensitive_file_id") if sim_hit else None
+    label_detail = semantic_labels.get(sensitive_file_id, {}) if sensitive_file_id else {}
 
     detail = {
         "sha256_hit": False,
@@ -171,6 +177,8 @@ def scan_file(file_path: Path, rules: list, fingerprints: list) -> ScanResult:
         "regex_hits": regex_hits,
         "keyword_hits": keyword_hits,
         "combined_hits": combined_hits,
+        "semantic_labels": label_detail.get("semantic_labels", []),
+        "embedding_id": label_detail.get("embedding_id"),
     }
     return ScanResult(str(file_path), sha256, sensitive, sensitive_type, risk_level, sensitive_file_id, score, confidence_level, detail)
 
