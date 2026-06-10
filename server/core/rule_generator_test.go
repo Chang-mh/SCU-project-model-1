@@ -62,6 +62,29 @@ func TestGenerateRulesDetectsTemplateCombinedRules(t *testing.T) {
 	}
 }
 
+func TestGenerateRulesKeywordExtractionUsesDomainBoosts(t *testing.T) {
+	rules := GenerateRules("这份文件包含客户报价资料，客户名称和联系人需要保密", "客户资料", "medium", "客户报价单")
+
+	var keywords []string
+	for _, rule := range rules {
+		if rule.RuleType == "keyword" {
+			keywords, _ = rule.Content["keywords"].([]string)
+			break
+		}
+	}
+	if len(keywords) == 0 {
+		t.Fatalf("GenerateRules() missing keyword rule in %#v", rules)
+	}
+	for _, want := range []string{"客户名称", "联系人", "报价"} {
+		if !containsAnyValue(keywords, want) {
+			t.Fatalf("keywords = %#v, want %q", keywords, want)
+		}
+	}
+	if containsAnyValue(keywords, "文件") || containsAnyValue(keywords, "资料") {
+		t.Fatalf("keywords = %#v, should filter common stop words", keywords)
+	}
+}
+
 func TestAnalyzeSemanticFallsBackToRules(t *testing.T) {
 	t.Setenv(EnvArkAPIKey, "")
 	t.Setenv(EnvArkEndpointID, "")
@@ -85,6 +108,15 @@ func TestAnalyzeSemanticFallsBackToRules(t *testing.T) {
 func hasRule(rules []RuleData, ruleType, ruleName string) bool {
 	for _, rule := range rules {
 		if rule.RuleType == ruleType && rule.RuleName == ruleName {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
 			return true
 		}
 	}

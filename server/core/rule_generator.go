@@ -45,9 +45,14 @@ var BuiltinRegexRules = []RegexRule{
 }
 
 var businessKeywords = []string{
-	"客户名称", "客户名单", "联系人", "联系方式", "报价", "报价单", "合同", "合同金额", "未公开", "保密",
-	"财务", "预算", "薪资", "工资", "奖金", "战略规划", "商业计划", "招投标", "投标", "源代码",
-	"漏洞", "运维账号", "数据库密码", "内部接口", "系统架构", "研发设计", "财报", "成本", "利润",
+	"客户名称", "客户名单", "联系人", "联系方式", "报价", "报价单", "合同", "合同编号", "合同金额", "未公开", "保密", "不得披露",
+	"财务", "预算", "薪资", "工资", "奖金", "绩效", "战略规划", "商业计划", "招投标", "投标", "源代码",
+	"漏洞", "运维账号", "数据库密码", "内部接口", "系统架构", "研发设计", "财报", "成本", "利润", "API Key", "access token",
+}
+
+var stopWords = map[string]bool{
+	"文件": true, "文档": true, "内容": true, "信息": true, "数据": true, "资料": true, "包含": true, "相关": true,
+	"the": true, "and": true, "this": true, "that": true, "with": true,
 }
 
 type combinedRuleTemplate struct {
@@ -178,8 +183,16 @@ func extractKeywords(text, sensitiveType, description string) []string {
 	seen := make(map[string]int)
 	combined := text + " " + sensitiveType + " " + description
 	for _, keyword := range businessKeywords {
-		if strings.Contains(combined, keyword) {
-			seen[keyword] += 10
+		if strings.Contains(strings.ToLower(combined), strings.ToLower(keyword)) {
+			seen[keyword] += 20
+		}
+	}
+	for _, keyword := range businessKeywords {
+		if sensitiveType != "" && strings.Contains(strings.ToLower(keyword), strings.ToLower(sensitiveType)) {
+			seen[keyword] += 8
+		}
+		if description != "" && strings.Contains(strings.ToLower(description), strings.ToLower(keyword)) {
+			seen[keyword] += 12
 		}
 	}
 
@@ -187,7 +200,18 @@ func extractKeywords(text, sensitiveType, description string) []string {
 		if len([]rune(token)) < 2 || isStopWord(token) {
 			continue
 		}
-		seen[token]++
+		weight := 1
+		if strings.Contains(sensitiveType, token) || strings.Contains(description, token) {
+			weight = 3
+		}
+		seen[token] += weight
+	}
+
+	for _, phrase := range cjkNgrams(combined, 2, 4) {
+		if isStopWord(phrase) {
+			continue
+		}
+		seen[phrase] += 2
 	}
 
 	type pair struct {
@@ -196,6 +220,9 @@ func extractKeywords(text, sensitiveType, description string) []string {
 	}
 	var pairs []pair
 	for word, count := range seen {
+		if isStopWord(word) {
+			continue
+		}
 		pairs = append(pairs, pair{word: word, count: count})
 	}
 	sort.Slice(pairs, func(i, j int) bool {
@@ -214,6 +241,31 @@ func extractKeywords(text, sensitiveType, description string) []string {
 		keywords = append(keywords, pairs[i].word)
 	}
 	return keywords
+}
+
+func cjkNgrams(text string, minN, maxN int) []string {
+	var grams []string
+	var runes []rune
+	flush := func() {
+		for n := minN; n <= maxN; n++ {
+			if len(runes) < n {
+				continue
+			}
+			for i := 0; i+n <= len(runes); i++ {
+				grams = append(grams, string(runes[i:i+n]))
+			}
+		}
+		runes = nil
+	}
+	for _, r := range text {
+		if r >= 0x4e00 && r <= 0x9fff {
+			runes = append(runes, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return grams
 }
 
 func tokenizeWords(text string) []string {
@@ -237,7 +289,6 @@ func tokenizeWords(text string) []string {
 }
 
 func isStopWord(word string) bool {
-	stopWords := map[string]bool{"文件": true, "文档": true, "内容": true, "信息": true, "数据": true, "the": true, "and": true, "this": true}
 	return stopWords[strings.ToLower(word)]
 }
 
