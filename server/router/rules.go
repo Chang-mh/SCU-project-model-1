@@ -74,8 +74,54 @@ func genSemanticID() string {
 	return "sem_" + hex.EncodeToString(b)
 }
 
-func saveSemanticFeature(sampleID string, semantic core.SemanticResult) {
-	labels, _ := json.Marshal(semantic.SemanticLabels)
+type preparedUpload struct {
+	FileID        string
+	FileName      string
+	Text          string
+	SHA256        string
+	SimHash       string
+	Rules         []core.RuleData
+	Semantic      core.SemanticResult
+	ParseWarn     error
+	OriginalBytes int
+}
+
+func prepareUpload(fileName string, data []byte, sensitiveType, riskLevel, description string) preparedUpload {
+	text, _, err := core.ExtractText(fileName, data)
+	if err != nil {
+		zap.L().Warn("文本解析不完整", zap.String("file", fileName), zap.Error(err))
+	}
+	if text == "" {
+		text = fmt.Sprintf("[二进制文件: %s, 大小: %d bytes]", fileName, len(data))
+	}
+
+	sha256 := core.SHA256Hex(data)
+	return preparedUpload{
+		FileID:        genFileID(),
+		FileName:      fileName,
+		Text:          text,
+		SHA256:        sha256,
+		SimHash:       core.SimHashString(text),
+		Rules:         core.GenerateRules(text, sensitiveType, riskLevel, description),
+		Semantic:      core.AnalyzeSemantic(text, sensitiveType, riskLevel),
+		ParseWarn:     err,
+		OriginalBytes: len(data),
+	}
+}
+
+func nextRuleVersion(tx *gorm.DB) (int, error) {
+	var version int
+	if err := tx.Raw("SELECT COALESCE(MAX(version), 0) FROM rule_versions").Scan(&version).Error; err != nil {
+		return 0, fmt.Errorf("查询规则版本失败: %w", err)
+	}
+	return version + 1, nil
+}
+
+func saveSemanticFeature(tx *gorm.DB, sampleID string, semantic core.SemanticResult) error {
+	labels, err := json.Marshal(semantic.SemanticLabels)
+	if err != nil {
+		return fmt.Errorf("序列化语义标签失败: %w", err)
+	}
 	feature := model.SemanticFeature{
 		ID:             genSemanticID(),
 		SampleID:       sampleID,
@@ -88,8 +134,68 @@ func saveSemanticFeature(sampleID string, semantic core.SemanticResult) {
 	if feature.ModelName == "" {
 		feature.ModelName = "rule-fallback"
 	}
-	if err := dal.DB.Create(&feature).Error; err != nil {
-		zap.L().Warn("保存语义特征失败", zap.String("sample_id", sampleID), zap.Error(err))
+	if err := tx.Create(&feature).Error; err != nil {
+		return fmt.Errorf("保存语义特征失败: %w", err)
+	}
+	return nil
+}
+
+func persistPreparedUpload(tx *gorm.DB, item preparedUpload, version int) error {
+	sample := model.SensitiveSample{
+		ID:            item.FileID,
+		FileName:      item.FileName,
+		FileType:      filepath.Ext(item.FileName),
+		SensitiveType: item.Semantic.SensitiveType,
+		RiskLevel:     item.Semantic.RiskLevel,
+		SHA256:        item.SHA256,
+		Explanation:   item.Semantic.Explanation,
+		ExtractedText: item.Text,
+		UploadedAt:    time.Now(),
+	}
+	if err := tx.Create(&sample).Error; err != nil {
+		return fmt.Errorf("保存样本失败: %w", err)
+	}
+
+	for _, rule := range item.Rules {
+		r := model.GeneratedRule{
+			ID:            genRuleID(),
+			SampleID:      item.FileID,
+			Version:       version,
+			RuleType:      rule.RuleType,
+			SensitiveType: rule.SensitiveType,
+			RiskLevel:     rule.RiskLevel,
+			Content:       core.RuleContentJSON(rule.Content),
+			CreatedAt:     time.Now(),
+		}
+		if err := tx.Create(&r).Error; err != nil {
+			return fmt.Errorf("保存规则失败: %w", err)
+		}
+	}
+
+	fp := model.FileFingerprint{
+		SampleID:   item.FileID,
+		SHA256:     item.SHA256,
+		SimHash:    item.SimHash,
+		TextLength: len(item.Text),
+	}
+	if err := tx.Create(&fp).Error; err != nil {
+		return fmt.Errorf("保存指纹失败: %w", err)
+	}
+	if err := saveSemanticFeature(tx, item.FileID, item.Semantic); err != nil {
+		return err
+	}
+	return nil
+}
+
+func uploadResponse(item preparedUpload, version int) map[string]any {
+	return map[string]any{
+		"sensitive_file_id":     item.FileID,
+		"file_name":             item.FileName,
+		"sensitive_type":        item.Semantic.SensitiveType,
+		"risk_level":            item.Semantic.RiskLevel,
+		"rule_version":          version,
+		"generated_rules_count": len(item.Rules),
+		"fingerprint":           map[string]any{"sha256": item.SHA256, "simhash": item.SimHash},
 	}
 }
 
@@ -117,93 +223,47 @@ func UploadSample(ctx *app.RequestContext) {
 	riskLevel := string(ctx.FormValue("risk_level"))
 	description := string(ctx.FormValue("description"))
 
-	fileID := genFileID()
-	fileName := fileHeader.Filename
-
-	text, _, err := core.ExtractText(fileName, data)
-	if err != nil {
-		zap.L().Warn("文本解析不完整", zap.String("file", fileName), zap.Error(err))
-	}
-	if text == "" {
-		text = fmt.Sprintf("[二进制文件: %s, 大小: %d bytes]", fileName, len(data))
-	}
-
-	sha256 := core.SHA256Hex(data)
-	simhash := core.SimHashString(text)
-
-	rules := core.GenerateRules(text, sensitiveType, riskLevel, description)
-	semantic := core.AnalyzeSemantic(text, sensitiveType, riskLevel)
-
-	var version int
-	if err := dal.DB.Raw("SELECT COALESCE(MAX(version), 0) FROM rule_versions").Scan(&version).Error; err != nil {
-		version = 0
-	}
-	newVersion := version + 1
-
-	sample := model.SensitiveSample{
-		ID:            fileID,
-		FileName:      fileName,
-		FileType:      filepath.Ext(fileName),
-		SensitiveType: semantic.SensitiveType,
-		RiskLevel:     semantic.RiskLevel,
-		SHA256:        sha256,
-		Explanation:   semantic.Explanation,
-		ExtractedText: text,
-		UploadedAt:    time.Now(),
-	}
-	if err := dal.DB.Create(&sample).Error; err != nil {
-		zap.L().Error("保存样本失败", zap.Error(err))
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "保存样本失败"})
+	item := prepareUpload(fileHeader.Filename, data, sensitiveType, riskLevel, description)
+	var newVersion int
+	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
+		version, err := nextRuleVersion(tx)
+		if err != nil {
+			return err
+		}
+		newVersion = version
+		if err := persistPreparedUpload(tx, item, newVersion); err != nil {
+			return err
+		}
+		ver := model.RuleVersion{
+			Version:    newVersion,
+			ChangeType: "upload",
+			CreatedAt:  time.Now(),
+		}
+		if err := tx.Create(&ver).Error; err != nil {
+			return fmt.Errorf("保存规则版本失败: %w", err)
+		}
+		return nil
+	}); err != nil {
+		zap.L().Error("上传样本事务失败", zap.String("file", fileHeader.Filename), zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
-	for _, rule := range rules {
-		r := model.GeneratedRule{
-			ID:            genRuleID(),
-			SampleID:      fileID,
-			Version:       newVersion,
-			RuleType:      rule.RuleType,
-			SensitiveType: rule.SensitiveType,
-			RiskLevel:     rule.RiskLevel,
-			Content:       core.RuleContentJSON(rule.Content),
-			CreatedAt:     time.Now(),
-		}
-		dal.DB.Create(&r)
-	}
-
-	fp := model.FileFingerprint{
-		SampleID:   fileID,
-		SHA256:     sha256,
-		SimHash:    simhash,
-		TextLength: len(text),
-	}
-	dal.DB.Create(&fp)
-	saveSemanticFeature(fileID, semantic)
-
-	ver := model.RuleVersion{
-		Version:    newVersion,
-		ChangeType: "upload",
-		CreatedAt:  time.Now(),
-	}
-	dal.DB.Create(&ver)
-
-	fingerprint := map[string]any{"sha256": sha256, "simhash": simhash}
-
 	resp := SampleUploadResponse{
-		SensitiveFileID:     fileID,
-		FileName:            fileName,
-		SensitiveType:       sample.SensitiveType,
-		RiskLevel:           sample.RiskLevel,
+		SensitiveFileID:     item.FileID,
+		FileName:            item.FileName,
+		SensitiveType:       item.Semantic.SensitiveType,
+		RiskLevel:           item.Semantic.RiskLevel,
 		RuleVersion:         newVersion,
-		GeneratedRulesCount: len(rules),
-		Fingerprint:         fingerprint,
-		Explanation:         sample.Explanation,
+		GeneratedRulesCount: len(item.Rules),
+		Fingerprint:         map[string]any{"sha256": item.SHA256, "simhash": item.SimHash},
+		Explanation:         item.Semantic.Explanation,
 	}
 
 	zap.L().Info("样本上传成功",
-		zap.String("file_id", fileID),
-		zap.String("file", fileName),
-		zap.Int("rules", len(rules)),
+		zap.String("file_id", item.FileID),
+		zap.String("file", item.FileName),
+		zap.Int("rules", len(item.Rules)),
 		zap.Int("version", newVersion),
 	)
 	ctx.JSON(consts.StatusOK, resp)
@@ -350,69 +410,48 @@ func UploadSamplesBatch(ctx *app.RequestContext) {
 	riskLevel := string(ctx.FormValue("risk_level"))
 	description := string(ctx.FormValue("description"))
 
-	results := make([]map[string]any, 0, len(files))
+	items := make([]preparedUpload, 0, len(files))
 	for _, fh := range files {
 		f, err := fh.Open()
 		if err != nil {
-			continue
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("无法读取上传文件 %s: %v", fh.Filename, err)})
+			return
 		}
 		data, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			continue
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("读取文件 %s 失败: %v", fh.Filename, err)})
+			return
 		}
+		items = append(items, prepareUpload(fh.Filename, data, sensitiveType, riskLevel, description))
+	}
 
-		fileID := genFileID()
-		text, _, _ := core.ExtractText(fh.Filename, data)
-		if text == "" {
-			text = fmt.Sprintf("[binary: %s, %d bytes]", fh.Filename, len(data))
+	results := make([]map[string]any, 0, len(items))
+	var newVersion int
+	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
+		version, err := nextRuleVersion(tx)
+		if err != nil {
+			return err
 		}
-		sha256 := core.SHA256Hex(data)
-		simhash := core.SimHashString(text)
-		rules := core.GenerateRules(text, sensitiveType, riskLevel, description)
-		semantic := core.AnalyzeSemantic(text, sensitiveType, riskLevel)
-
-		var version int
-		dal.DB.Raw("SELECT COALESCE(MAX(version), 0) FROM rule_versions").Scan(&version)
-		newVersion := version + 1
-
-		sample := model.SensitiveSample{
-			ID:            fileID,
-			FileName:      fh.Filename,
-			FileType:      filepath.Ext(fh.Filename),
-			SensitiveType: semantic.SensitiveType,
-			RiskLevel:     semantic.RiskLevel,
-			SHA256:        sha256,
-			Explanation:   semantic.Explanation,
-			ExtractedText: text,
-			UploadedAt:    time.Now(),
+		newVersion = version
+		for _, item := range items {
+			if err := persistPreparedUpload(tx, item, newVersion); err != nil {
+				return fmt.Errorf("文件 %s 入库失败: %w", item.FileName, err)
+			}
 		}
-		dal.DB.Create(&sample)
-		for _, rule := range rules {
-			dal.DB.Create(&model.GeneratedRule{
-				ID:            genRuleID(),
-				SampleID:      fileID,
-				Version:       newVersion,
-				RuleType:      rule.RuleType,
-				SensitiveType: rule.SensitiveType,
-				RiskLevel:     rule.RiskLevel,
-				Content:       core.RuleContentJSON(rule.Content),
-				CreatedAt:     time.Now(),
-			})
+		ver := model.RuleVersion{Version: newVersion, ChangeType: "batch_upload", CreatedAt: time.Now()}
+		if err := tx.Create(&ver).Error; err != nil {
+			return fmt.Errorf("保存规则版本失败: %w", err)
 		}
-		dal.DB.Create(&model.FileFingerprint{SampleID: fileID, SHA256: sha256, SimHash: simhash, TextLength: len(text)})
-		saveSemanticFeature(fileID, semantic)
-		dal.DB.Create(&model.RuleVersion{Version: newVersion, ChangeType: "batch_upload", CreatedAt: time.Now()})
+		return nil
+	}); err != nil {
+		zap.L().Error("批量上传事务失败", zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 
-		results = append(results, map[string]any{
-			"sensitive_file_id":     fileID,
-			"file_name":             fh.Filename,
-			"sensitive_type":        sample.SensitiveType,
-			"risk_level":            sample.RiskLevel,
-			"rule_version":          newVersion,
-			"generated_rules_count": len(rules),
-			"fingerprint":           map[string]any{"sha256": sha256, "simhash": simhash},
-		})
+	for _, item := range items {
+		results = append(results, uploadResponse(item, newVersion))
 	}
 
 	resp := map[string]any{
@@ -547,58 +586,37 @@ func UploadZip(ctx *app.RequestContext) {
 	riskLevel := string(ctx.FormValue("risk_level"))
 	description := string(ctx.FormValue("description"))
 
-	results := make([]map[string]any, 0, len(files))
+	items := make([]preparedUpload, 0, len(files))
 	for name, content := range files {
-		fileID := genFileID()
-		text, _, _ := core.ExtractText(name, content)
-		if text == "" {
-			text = fmt.Sprintf("[binary: %s, %d bytes]", name, len(content))
-		}
-		sha256 := core.SHA256Hex(content)
-		simhash := core.SimHashString(text)
-		rules := core.GenerateRules(text, sensitiveType, riskLevel, description)
-		semantic := core.AnalyzeSemantic(text, sensitiveType, riskLevel)
+		items = append(items, prepareUpload(name, content, sensitiveType, riskLevel, description))
+	}
 
-		var version int
-		dal.DB.Raw("SELECT COALESCE(MAX(version), 0) FROM rule_versions").Scan(&version)
-		newVersion := version + 1
+	var newVersion int
+	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
+		version, err := nextRuleVersion(tx)
+		if err != nil {
+			return err
+		}
+		newVersion = version
+		for _, item := range items {
+			if err := persistPreparedUpload(tx, item, newVersion); err != nil {
+				return fmt.Errorf("文件 %s 入库失败: %w", item.FileName, err)
+			}
+		}
+		ver := model.RuleVersion{Version: newVersion, ChangeType: "zip_upload", CreatedAt: time.Now()}
+		if err := tx.Create(&ver).Error; err != nil {
+			return fmt.Errorf("保存规则版本失败: %w", err)
+		}
+		return nil
+	}); err != nil {
+		zap.L().Error("ZIP上传事务失败", zap.String("file", fileHeader.Filename), zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 
-		sample := model.SensitiveSample{
-			ID:            fileID,
-			FileName:      name,
-			FileType:      filepath.Ext(name),
-			SensitiveType: semantic.SensitiveType,
-			RiskLevel:     semantic.RiskLevel,
-			SHA256:        sha256,
-			Explanation:   semantic.Explanation,
-			ExtractedText: text,
-			UploadedAt:    time.Now(),
-		}
-		dal.DB.Create(&sample)
-		for _, rule := range rules {
-			dal.DB.Create(&model.GeneratedRule{
-				ID:            genRuleID(),
-				SampleID:      fileID,
-				Version:       newVersion,
-				RuleType:      rule.RuleType,
-				SensitiveType: rule.SensitiveType,
-				RiskLevel:     rule.RiskLevel,
-				Content:       core.RuleContentJSON(rule.Content),
-				CreatedAt:     time.Now(),
-			})
-		}
-		dal.DB.Create(&model.FileFingerprint{SampleID: fileID, SHA256: sha256, SimHash: simhash, TextLength: len(text)})
-		saveSemanticFeature(fileID, semantic)
-		dal.DB.Create(&model.RuleVersion{Version: newVersion, ChangeType: "zip_upload", CreatedAt: time.Now()})
-		results = append(results, map[string]any{
-			"sensitive_file_id":     fileID,
-			"file_name":             name,
-			"sensitive_type":        sample.SensitiveType,
-			"risk_level":            sample.RiskLevel,
-			"rule_version":          newVersion,
-			"generated_rules_count": len(rules),
-			"fingerprint":           map[string]any{"sha256": sha256, "simhash": simhash},
-		})
+	results := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		results = append(results, uploadResponse(item, newVersion))
 	}
 
 	ctx.JSON(consts.StatusOK, map[string]any{"total": len(results), "results": results})
