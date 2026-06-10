@@ -1,7 +1,6 @@
 """客户端本地 SQLite 标签库管理"""
 
 import sqlite3
-import os
 from datetime import datetime
 from typing import Optional
 
@@ -25,12 +24,14 @@ class LocalDB:
                 risk_level TEXT,
                 sensitive_file_id TEXT,
                 match_score INTEGER,
+                confidence_level TEXT DEFAULT 'clean',
                 match_detail TEXT,
                 first_detected_at TEXT,
                 last_detected_at TEXT,
                 UNIQUE(file_path, file_hash)
             )
         """)
+        self._ensure_column("local_file_tags", "confidence_level", "TEXT DEFAULT 'clean'")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS local_rules_version (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -54,6 +55,13 @@ class LocalDB:
             )
         """)
         self.conn.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str):
+        cursor = self.conn.cursor()
+        cursor.execute(f"PRAGMA table_info({table})")
+        columns = {row["name"] for row in cursor.fetchall()}
+        if column not in columns:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def get_local_version(self) -> int:
         cursor = self.conn.cursor()
@@ -116,6 +124,7 @@ class LocalDB:
         risk_level: Optional[str] = None,
         sensitive_file_id: Optional[str] = None,
         match_score: int = 0,
+        confidence_level: str = "clean",
         match_detail: Optional[dict] = None,
     ):
         import json
@@ -127,19 +136,20 @@ class LocalDB:
         cursor.execute(
             """INSERT INTO local_file_tags
                 (file_path, file_hash, sensitive, sensitive_type, risk_level,
-                 sensitive_file_id, match_score, match_detail, first_detected_at, last_detected_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sensitive_file_id, match_score, confidence_level, match_detail, first_detected_at, last_detected_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(file_path, file_hash) DO UPDATE SET
                     sensitive = excluded.sensitive,
                     sensitive_type = excluded.sensitive_type,
                     risk_level = excluded.risk_level,
                     sensitive_file_id = excluded.sensitive_file_id,
                     match_score = excluded.match_score,
+                    confidence_level = excluded.confidence_level,
                     match_detail = excluded.match_detail,
                     last_detected_at = excluded.last_detected_at
             """,
             (file_path, file_hash, sensitive_int, sensitive_type, risk_level,
-             sensitive_file_id, match_score, detail_json, now, now),
+             sensitive_file_id, match_score, confidence_level, detail_json, now, now),
         )
         self.conn.commit()
 

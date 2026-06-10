@@ -191,6 +191,17 @@ def compute_score(
     return min(score, 100)
 
 
+def compute_detection_status(score: int) -> tuple[bool, str]:
+    """返回 (是否真实敏感, 置信分级)。"""
+    if score >= 80:
+        return True, "sensitive"
+    if score >= 50:
+        return False, "suspected"
+    if score >= 30:
+        return False, "low_confidence"
+    return False, "clean"
+
+
 def score_to_risk(score: int) -> str:
     """分数转风险等级"""
     if score >= 80:

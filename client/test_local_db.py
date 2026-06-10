@@ -19,6 +19,7 @@ class LocalDBTest(unittest.TestCase):
                     risk_level="high",
                     sensitive_file_id="file_1",
                     match_score=100,
+                    confidence_level="sensitive",
                     match_detail={"sha256_hit": True},
                 )
                 db.upsert_file_tag(
@@ -29,6 +30,7 @@ class LocalDBTest(unittest.TestCase):
                     risk_level="low",
                     sensitive_file_id="file_1",
                     match_score=30,
+                    confidence_level="low_confidence",
                     match_detail={"keyword_hits": ["报价"]},
                 )
 
@@ -42,6 +44,7 @@ class LocalDBTest(unittest.TestCase):
         self.assertEqual(rows[0]["sensitive"], 0)
         self.assertEqual(rows[0]["risk_level"], "low")
         self.assertEqual(rows[0]["match_score"], 30)
+        self.assertEqual(rows[0]["confidence_level"], "low_confidence")
 
     def test_list_tags_returns_dict_rows_and_filters_sensitive_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:

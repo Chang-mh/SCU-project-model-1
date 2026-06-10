@@ -25,6 +25,7 @@ except Exception:
 try:
     from local_db import LocalDB
     from matcher import (
+        compute_detection_status,
         compute_score,
         compute_sha256,
         compute_simhash,
@@ -38,6 +39,7 @@ try:
 except ImportError:
     from client.local_db import LocalDB
     from client.matcher import (
+        compute_detection_status,
         compute_score,
         compute_sha256,
         compute_simhash,
@@ -59,7 +61,7 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 
 
 class ScanResult:
-    def __init__(self, file_path: str, file_hash: str, sensitive: bool, sensitive_type: Optional[str], risk_level: str, sensitive_file_id: Optional[str], match_score: int, match_detail: dict):
+    def __init__(self, file_path: str, file_hash: str, sensitive: bool, sensitive_type: Optional[str], risk_level: str, sensitive_file_id: Optional[str], match_score: int, confidence_level: str, match_detail: dict):
         self.file_path = file_path
         self.file_hash = file_hash
         self.sensitive = sensitive
@@ -67,6 +69,7 @@ class ScanResult:
         self.risk_level = risk_level
         self.sensitive_file_id = sensitive_file_id
         self.match_score = match_score
+        self.confidence_level = confidence_level
         self.match_detail = match_detail
 
     def to_dict(self) -> dict:
@@ -78,6 +81,7 @@ class ScanResult:
             "risk_level": self.risk_level,
             "sensitive_file_id": self.sensitive_file_id,
             "match_score": self.match_score,
+            "confidence_level": self.confidence_level,
             "match_detail": self.match_detail,
         }
 
@@ -103,11 +107,12 @@ def scan_directory(path: str, db: LocalDB) -> list[dict]:
                 risk_level=result.risk_level,
                 sensitive_file_id=result.sensitive_file_id,
                 match_score=result.match_score,
+                confidence_level=result.confidence_level,
                 match_detail=result.match_detail,
             )
             results.append(result.to_dict())
-            if result.sensitive:
-                logger.warning(f"发现敏感文件: {result.file_path}, score={result.match_score}, risk={result.risk_level}")
+            if result.confidence_level != "clean":
+                logger.warning(f"发现命中文件: {result.file_path}, confidence={result.confidence_level}, score={result.match_score}, risk={result.risk_level}")
             else:
                 logger.info(f"扫描完成: {result.file_path}, score={result.match_score}")
         except Exception as exc:
@@ -144,7 +149,7 @@ def scan_file(file_path: Path, rules: list, fingerprints: list) -> ScanResult:
             "keyword_hits": [],
             "combined_hits": [],
         }
-        return ScanResult(str(file_path), sha256, True, "样本指纹命中", "high", sha_hit.get("sensitive_file_id"), 100, detail)
+        return ScanResult(str(file_path), sha256, True, "样本指纹命中", "high", sha_hit.get("sensitive_file_id"), 100, "sensitive", detail)
 
     text = extract_text(file_path, data)
     simhash = compute_simhash(text) if text else ""
@@ -154,7 +159,7 @@ def scan_file(file_path: Path, rules: list, fingerprints: list) -> ScanResult:
     combined_hits = match_combined(text, rules) if text else []
 
     score = compute_score(bool(sha_hit), bool(sim_hit), regex_hits, keyword_hits, combined_hits)
-    sensitive = score >= 30
+    sensitive, confidence_level = compute_detection_status(score)
     risk_level = score_to_risk(score)
     sensitive_type = infer_sensitive_type(regex_hits, keyword_hits, combined_hits, rules)
     sensitive_file_id = sim_hit.get("sensitive_file_id") if sim_hit else None
@@ -167,7 +172,7 @@ def scan_file(file_path: Path, rules: list, fingerprints: list) -> ScanResult:
         "keyword_hits": keyword_hits,
         "combined_hits": combined_hits,
     }
-    return ScanResult(str(file_path), sha256, sensitive, sensitive_type, risk_level, sensitive_file_id, score, detail)
+    return ScanResult(str(file_path), sha256, sensitive, sensitive_type, risk_level, sensitive_file_id, score, confidence_level, detail)
 
 
 def extract_text(file_path: Path, data: bytes) -> str:

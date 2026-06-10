@@ -57,11 +57,15 @@ def main():
                 dump_results(results)
             else:
                 total = len(results)
-                sensitive = sum(1 for r in results if r.get("sensitive"))
-                print(f"扫描完成：总文件 {total}，敏感/疑似敏感 {sensitive}")
+                sensitive = sum(1 for r in results if r.get("confidence_level") == "sensitive")
+                suspected = sum(1 for r in results if r.get("confidence_level") == "suspected")
+                low_confidence = sum(1 for r in results if r.get("confidence_level") == "low_confidence")
+                print(f"扫描完成：总文件 {total}，敏感 {sensitive}，疑似 {suspected}，低置信 {low_confidence}")
+                label_map = {"sensitive": "[敏感]", "suspected": "[疑似]", "low_confidence": "[低置信]"}
                 for r in results:
-                    if r.get("sensitive"):
-                        print(f"[敏感] {r['file_path']} score={r['match_score']} risk={r['risk_level']} type={r.get('sensitive_type')}")
+                    label = label_map.get(r.get("confidence_level"))
+                    if label:
+                        print(f"{label} {r['file_path']} score={r['match_score']} risk={r['risk_level']} type={r.get('sensitive_type')}")
         elif args.command == "list":
             rows = db.list_tags(args.sensitive_only)
             print(json.dumps(rows, ensure_ascii=False, indent=2))
