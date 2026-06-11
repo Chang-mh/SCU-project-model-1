@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -106,6 +107,60 @@ func genRuleID() string {
 
 func genSemanticID() string {
 	return "sem_" + randomHex(12)
+}
+
+const (
+	maxUploadFileSize = 50 * 1024 * 1024
+	maxBatchFileCount = 50
+	maxBatchTotalSize = 200 * 1024 * 1024
+	maxFileNameLength = 255
+)
+
+func normalizeRiskLevel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "critical", "high", "medium", "low", "info":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "medium"
+	}
+}
+
+func validateUploadName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("文件名不能为空")
+	}
+	if len([]rune(name)) > maxFileNameLength {
+		return fmt.Errorf("文件名长度超过限制: %d", maxFileNameLength)
+	}
+	cleanName := path.Clean(strings.ReplaceAll(name, "\\", "/"))
+	if cleanName == "." || strings.HasPrefix(cleanName, "../") || strings.Contains(cleanName, "/../") || path.IsAbs(cleanName) {
+		return fmt.Errorf("文件名包含非法路径: %s", name)
+	}
+	return nil
+}
+
+func readUploadFileLimited(fh *multipart.FileHeader, limit int64) ([]byte, error) {
+	if err := validateUploadName(fh.Filename); err != nil {
+		return nil, err
+	}
+	file, err := fh.Open()
+	if err != nil {
+		return nil, fmt.Errorf("无法读取上传文件: %w", err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("读取文件失败: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("文件大小超过限制: %d bytes", limit)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("文件内容不能为空")
+	}
+	return data, nil
 }
 
 type preparedUpload struct {
@@ -253,21 +308,14 @@ func UploadSample(ctx *app.RequestContext) {
 		return
 	}
 
-	file, err := fileHeader.Open()
+	data, err := readUploadFileLimited(fileHeader, maxUploadFileSize)
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "无法读取上传文件"})
-		return
-	}
-	defer file.Close()
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "读取文件失败"})
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
 	sensitiveType := string(ctx.FormValue("sensitive_type"))
-	riskLevel := string(ctx.FormValue("risk_level"))
+	riskLevel := normalizeRiskLevel(string(ctx.FormValue("risk_level")))
 	description := string(ctx.FormValue("description"))
 
 	item := prepareUpload(fileHeader.Filename, data, sensitiveType, riskLevel, description)
@@ -299,47 +347,40 @@ func UploadSample(ctx *app.RequestContext) {
 	ctx.JSON(consts.StatusOK, resp)
 }
 
-func SyncRules(ctx *app.RequestContext) {
-	versionStr := ctx.Query("version")
-	if versionStr == "" {
-		versionStr = "0"
-	}
-	clientVersion, err := strconv.Atoi(versionStr)
-	if err != nil {
-		clientVersion = 0
-	}
-
+func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
 	var latest model.RuleVersion
 	if err := dal.DB.Order("version desc").First(&latest).Error; err != nil {
-		ctx.JSON(consts.StatusOK, RuleSyncResponse{LatestVersion: 0, FullSync: false, Rules: nil, Fingerprints: nil})
-		return
+		if err == gorm.ErrRecordNotFound {
+			return RuleSyncResponse{LatestVersion: 0, FullSync: clientVersion == 0}, nil
+		}
+		return RuleSyncResponse{}, fmt.Errorf("查询最新规则版本失败: %w", err)
 	}
 
 	var rules []model.GeneratedRule
-	if err := dal.DB.Where("version > ?", clientVersion).Find(&rules).Error; err != nil || len(rules) == 0 {
-		ctx.JSON(consts.StatusOK, RuleSyncResponse{
-			LatestVersion: latest.Version,
-			FullSync:      false,
-			Rules:         nil,
-			Fingerprints:  nil,
-		})
-		return
+	if err := dal.DB.Where("version > ?", clientVersion).Find(&rules).Error; err != nil {
+		return RuleSyncResponse{}, fmt.Errorf("查询规则失败: %w", err)
 	}
 
 	var fingerprints []model.FileFingerprint
-	if clientVersion == 0 {
-		dal.DB.Find(&fingerprints)
-	} else {
-		dal.DB.Where("version > ?", clientVersion).Find(&fingerprints)
+	fingerprintQuery := dal.DB
+	if clientVersion != 0 {
+		fingerprintQuery = fingerprintQuery.Where("version > ?", clientVersion)
+	}
+	if err := fingerprintQuery.Find(&fingerprints).Error; err != nil {
+		return RuleSyncResponse{}, fmt.Errorf("查询指纹失败: %w", err)
 	}
 
 	var semanticFeatures []model.SemanticFeature
-	dal.DB.Find(&semanticFeatures)
+	if err := dal.DB.Find(&semanticFeatures).Error; err != nil {
+		return RuleSyncResponse{}, fmt.Errorf("查询语义特征失败: %w", err)
+	}
 
 	ruleResps := make([]RuleResp, 0, len(rules))
 	for _, r := range rules {
-		var content map[string]any
-		json.Unmarshal([]byte(r.Content), &content)
+		content := map[string]any{}
+		if err := json.Unmarshal([]byte(r.Content), &content); err != nil {
+			zap.L().Warn("解析规则内容失败", zap.String("rule_id", r.ID), zap.Error(err))
+		}
 		ruleResps = append(ruleResps, RuleResp{
 			RuleID:        r.ID,
 			RuleType:      r.RuleType,
@@ -358,12 +399,30 @@ func SyncRules(ctx *app.RequestContext) {
 		})
 	}
 
-	resp := RuleSyncResponse{
+	return RuleSyncResponse{
 		LatestVersion:  latest.Version,
 		FullSync:       clientVersion == 0,
 		Rules:          ruleResps,
 		Fingerprints:   fingerResps,
 		SemanticLabels: buildSemanticResps(semanticFeatures),
+	}, nil
+}
+
+func SyncRules(ctx *app.RequestContext) {
+	versionStr := ctx.Query("version")
+	if versionStr == "" {
+		versionStr = "0"
+	}
+	clientVersion, err := strconv.Atoi(versionStr)
+	if err != nil {
+		clientVersion = 0
+	}
+
+	resp, err := buildRuleSyncResponse(clientVersion)
+	if err != nil {
+		zap.L().Error("同步规则失败", zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
 	ctx.JSON(consts.StatusOK, resp)
 }
@@ -445,20 +504,25 @@ func UploadSamplesBatch(ctx *app.RequestContext) {
 	}
 
 	sensitiveType := string(ctx.FormValue("sensitive_type"))
-	riskLevel := string(ctx.FormValue("risk_level"))
+	riskLevel := normalizeRiskLevel(string(ctx.FormValue("risk_level")))
 	description := string(ctx.FormValue("description"))
 
+	if len(files) > maxBatchFileCount {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("批量上传文件数量超过限制: %d", maxBatchFileCount)})
+		return
+	}
+
 	items := make([]preparedUpload, 0, len(files))
+	var totalSize int64
 	for _, fh := range files {
-		f, err := fh.Open()
+		data, err := readUploadFileLimited(fh, maxUploadFileSize)
 		if err != nil {
-			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("无法读取上传文件 %s: %v", fh.Filename, err)})
+			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("文件 %s 校验失败: %v", fh.Filename, err)})
 			return
 		}
-		data, err := io.ReadAll(f)
-		f.Close()
-		if err != nil {
-			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("读取文件 %s 失败: %v", fh.Filename, err)})
+		totalSize += int64(len(data))
+		if totalSize > maxBatchTotalSize {
+			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": fmt.Sprintf("批量上传总大小超过限制: %d bytes", maxBatchTotalSize)})
 			return
 		}
 		items = append(items, prepareUpload(fh.Filename, data, sensitiveType, riskLevel, description))
@@ -619,16 +683,9 @@ func UploadZip(ctx *app.RequestContext) {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "缺少文件"})
 		return
 	}
-	file, err := fileHeader.Open()
+	data, err := readUploadFileLimited(fileHeader, maxZipTotalSize)
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "无法读取文件"})
-		return
-	}
-	defer file.Close()
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "读取文件失败"})
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -645,7 +702,7 @@ func UploadZip(ctx *app.RequestContext) {
 	}
 
 	sensitiveType := string(ctx.FormValue("sensitive_type"))
-	riskLevel := string(ctx.FormValue("risk_level"))
+	riskLevel := normalizeRiskLevel(string(ctx.FormValue("risk_level")))
 	description := string(ctx.FormValue("description"))
 
 	items := make([]preparedUpload, 0, len(files))
@@ -709,38 +766,12 @@ type RuleSyncQuery struct {
 }
 
 func getRuleSet(clientVersion int) RuleSyncResponse {
-	var latest model.RuleVersion
-	if err := dal.DB.Order("version desc").First(&latest).Error; err != nil {
+	resp, err := buildRuleSyncResponse(clientVersion)
+	if err != nil {
+		zap.L().Error("批量同步规则失败", zap.Error(err))
 		return RuleSyncResponse{LatestVersion: 0}
 	}
-	var rules []model.GeneratedRule
-	if err := dal.DB.Where("version > ?", clientVersion).Find(&rules).Error; err != nil || len(rules) == 0 {
-		return RuleSyncResponse{LatestVersion: latest.Version}
-	}
-	var fingerprints []model.FileFingerprint
-	if clientVersion == 0 {
-		dal.DB.Find(&fingerprints)
-	} else {
-		dal.DB.Where("version > ?", clientVersion).Find(&fingerprints)
-	}
-
-	var semanticFeatures []model.SemanticFeature
-	dal.DB.Find(&semanticFeatures)
-
-	ruleResps := make([]RuleResp, 0, len(rules))
-	for _, r := range rules {
-		var content map[string]any
-		json.Unmarshal([]byte(r.Content), &content)
-		ruleResps = append(ruleResps, RuleResp{
-			RuleID: r.ID, RuleType: r.RuleType, SensitiveType: r.SensitiveType,
-			RiskLevel: r.RiskLevel, Content: content,
-		})
-	}
-	fingerResps := make([]FingerResp, 0, len(fingerprints))
-	for _, f := range fingerprints {
-		fingerResps = append(fingerResps, FingerResp{SensitiveFileID: f.SampleID, SHA256: f.SHA256, SimHash: f.SimHash})
-	}
-	return RuleSyncResponse{LatestVersion: latest.Version, FullSync: clientVersion == 0, Rules: ruleResps, Fingerprints: fingerResps, SemanticLabels: buildSemanticResps(semanticFeatures)}
+	return resp
 }
 
 func ContentScan(ctx *app.RequestContext) {

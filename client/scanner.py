@@ -33,6 +33,7 @@ try:
         match_combined,
         match_keyword,
         match_regex,
+        match_semantic_labels,
         match_sha256,
         match_simhash,
         score_to_risk,
@@ -47,6 +48,7 @@ except ImportError:
         match_combined,
         match_keyword,
         match_regex,
+        match_semantic_labels,
         match_sha256,
         match_simhash,
         score_to_risk,
@@ -153,23 +155,39 @@ def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels:
             "regex_hits": [],
             "keyword_hits": [],
             "combined_hits": [],
+            "semantic_label_hits": [],
             "semantic_labels": label_detail.get("semantic_labels", []),
             "embedding_id": label_detail.get("embedding_id"),
         }
         return ScanResult(str(file_path), sha256, True, "样本指纹命中", "high", sha_hit.get("sensitive_file_id"), 100, "sensitive", detail)
 
-    text = extract_text(file_path, data)
+    text = ""
+    extract_error = None
+    skip_reason = None
+    try:
+        text = extract_text(file_path, data)
+    except Exception as exc:
+        extract_error = str(exc)
+        logger.warning(f"文本提取失败: {file_path}, reason={extract_error}")
+    if not text and file_path.suffix.lower() == ".pdf":
+        skip_reason = "pdf_text_empty" if PdfReader is not None else "pdf_reader_missing"
+
     simhash = compute_simhash(text) if text else ""
     sim_hit = match_simhash(simhash, fingerprints) if simhash else None
     regex_hits = match_regex(text, rules) if text else []
     keyword_hits = match_keyword(text, rules) if text else []
     combined_hits = match_combined(text, rules) if text else []
+    semantic_hits = match_semantic_labels(text, semantic_labels) if text else []
 
-    score = compute_score(bool(sha_hit), bool(sim_hit), regex_hits, keyword_hits, combined_hits)
+    score = compute_score(bool(sha_hit), bool(sim_hit), regex_hits, keyword_hits, combined_hits, semantic_hits)
     sensitive, confidence_level = compute_detection_status(score)
     risk_level = score_to_risk(score)
     sensitive_type = infer_sensitive_type(regex_hits, keyword_hits, combined_hits, rules)
+    if sensitive_type is None and semantic_hits:
+        sensitive_type = semantic_hits[0].get("semantic_label") or "语义标签命中"
     sensitive_file_id = sim_hit.get("sensitive_file_id") if sim_hit else None
+    if sensitive_file_id is None and semantic_hits:
+        sensitive_file_id = semantic_hits[0].get("sensitive_file_id")
     label_detail = semantic_labels.get(sensitive_file_id, {}) if sensitive_file_id else {}
 
     detail = {
@@ -179,9 +197,14 @@ def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels:
         "regex_hits": regex_hits,
         "keyword_hits": keyword_hits,
         "combined_hits": combined_hits,
+        "semantic_label_hits": semantic_hits,
         "semantic_labels": label_detail.get("semantic_labels", []),
         "embedding_id": label_detail.get("embedding_id"),
     }
+    if extract_error:
+        detail["extract_error"] = extract_error
+    if skip_reason:
+        detail["skip_reason"] = skip_reason
     return ScanResult(str(file_path), sha256, sensitive, sensitive_type, risk_level, sensitive_file_id, score, confidence_level, detail)
 
 
