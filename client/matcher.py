@@ -10,6 +10,19 @@ except Exception:
     jieba = None
 
 
+SEMANTIC_LABEL_KEYWORDS = {
+    "客户名单": ["客户", "联系人", "名单", "电话", "邮箱", "手机"],
+    "客户资料": ["客户", "联系人", "名单", "电话", "邮箱", "报价"],
+    "报价信息": ["报价", "合同金额", "价格", "万元", "单价", "总价"],
+    "财务预算": ["财务", "预算", "成本", "利润", "营收", "报表"],
+    "薪资明细": ["薪资", "工资", "奖金", "绩效", "社保", "个税"],
+    "源代码": ["源码", "接口", "token", "secret", "password", "api_key"],
+    "运维账号": ["账号", "密码", "token", "secret", "数据库", "内网", "ssh"],
+    "合同保密": ["合同", "保密", "甲方", "乙方", "违约", "条款"],
+    "商业机密": ["商业机密", "内部", "未公开", "战略", "规划", "报价"],
+}
+
+
 def compute_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -132,6 +145,30 @@ def _match_keywords(text: str, keywords: list) -> list:
             matched.append(kw)
     return matched
 
+def match_semantic_labels(text: str, semantic_labels: dict) -> list:
+    """语义标签辅助匹配，基于服务端同步的标签和本地关键词映射。"""
+    hits = []
+    seen = set()
+    for sensitive_file_id, detail in (semantic_labels or {}).items():
+        labels = detail.get("semantic_labels", []) or []
+        for label in labels:
+            keywords = set(SEMANTIC_LABEL_KEYWORDS.get(label, []))
+            keywords.add(label)
+            matched = _match_keywords(text, list(keywords))
+            if not matched:
+                continue
+            key = (sensitive_file_id, label)
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append({
+                "sensitive_file_id": sensitive_file_id,
+                "semantic_label": label,
+                "keywords_matched": matched,
+                "embedding_id": detail.get("embedding_id"),
+            })
+    return hits
+
 
 def match_combined(text: str, rules: list) -> list:
     """组合规则匹配"""
@@ -185,6 +222,7 @@ def compute_score(
     regex_hits: list,
     keyword_hits: list,
     combined_hits: list,
+    semantic_hits: Optional[list] = None,
 ) -> int:
     """根据命中项计算总分"""
     score = 0
@@ -202,6 +240,8 @@ def compute_score(
         score += 30
     for c in combined_hits:
         score += 50
+    if semantic_hits:
+        score += min(30, len(semantic_hits) * 20)
     return min(score, 100)
 
 

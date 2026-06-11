@@ -27,6 +27,9 @@ def sync_rules(server_url: str, db: LocalDB) -> dict:
     rules = data.get("rules", [])
     fingerprints = data.get("fingerprints", [])
     semantic_labels = data.get("semantic_labels", [])
+    config = data.get("config", {})
+    if config:
+        db.save_config(config)
 
     if not rules and not fingerprints and not semantic_labels and latest_version <= local_version:
         logger.info("规则已是最新，无需更新")
@@ -42,4 +45,5 @@ def sync_rules(server_url: str, db: LocalDB) -> dict:
         "rules_count": len(rules),
         "fingerprints_count": len(fingerprints),
         "semantic_labels_count": len(semantic_labels),
+        "config": config,
     }

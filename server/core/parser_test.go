@@ -48,6 +48,23 @@ func TestExtractTextFromXLSX(t *testing.T) {
 	}
 }
 
+func TestExtractTextFromPDFFallback(t *testing.T) {
+	t.Setenv(EnvPaddleOCRAPIURL, "")
+	t.Setenv(EnvPaddleOCRAPIKey, "")
+	data := []byte("%PDF-1.4\nvisible customer quote text 客户报价 信息\n%%EOF")
+
+	text, ext, err := ExtractText("quote.pdf", data)
+	if err == nil {
+		t.Fatalf("ExtractText() expected fallback warning error")
+	}
+	if ext != "pdf" {
+		t.Fatalf("ExtractText() ext = %q, want pdf", ext)
+	}
+	if !strings.Contains(text, "visible customer quote text") || !strings.Contains(text, "客户报价") {
+		t.Fatalf("ExtractText() text = %q", text)
+	}
+}
+
 func TestExtractTextFromDOCX(t *testing.T) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)

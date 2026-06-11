@@ -5,6 +5,7 @@ from matcher import (
     compute_simhash,
     match_keyword,
     match_regex,
+    match_semantic_labels,
     match_simhash,
 )
 
@@ -75,6 +76,25 @@ class MatcherTest(unittest.TestCase):
         self.assertEqual(compute_score(False, False, regex_hits, keyword_hits, []), 75)
         self.assertEqual(compute_score(False, True, [], [], []), 70)
         self.assertEqual(compute_score(True, True, regex_hits, keyword_hits, combined_hits), 100)
+
+    def test_match_semantic_labels_uses_cached_labels(self):
+        semantic_labels = {
+            "file_1": {
+                "semantic_labels": ["客户名单", "报价信息"],
+                "embedding_id": "emb_1",
+            }
+        }
+
+        hits = match_semantic_labels("客户联系人名单包含电话和报价金额", semantic_labels)
+
+        self.assertEqual({hit["semantic_label"] for hit in hits}, {"客户名单", "报价信息"})
+        self.assertTrue(all(hit["sensitive_file_id"] == "file_1" for hit in hits))
+
+    def test_compute_score_adds_semantic_hits_with_cap(self):
+        semantic_hits = [{"semantic_label": "客户名单"}, {"semantic_label": "报价信息"}]
+
+        self.assertEqual(compute_score(False, False, [], [], [], semantic_hits), 30)
+        self.assertEqual(compute_score(False, False, [{"risk_level": "high"}], [], [], semantic_hits), 60)
 
     def test_match_simhash_finds_near_duplicate(self):
         simhash = compute_simhash("客户名称：四川示例科技有限公司\n联系人：张三\n报价：50万元")

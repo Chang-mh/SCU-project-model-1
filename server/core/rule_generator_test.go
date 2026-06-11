@@ -85,6 +85,29 @@ func TestGenerateRulesKeywordExtractionUsesDomainBoosts(t *testing.T) {
 	}
 }
 
+func TestGenerateRulesKeywordExtractionUsesJiebaBusinessTerms(t *testing.T) {
+	rules := GenerateRules("甲方需缴纳履约保证金，逾期承担违约责任，付款节点按验收条款执行", "合同资料", "medium", "")
+
+	var keywords []string
+	for _, rule := range rules {
+		if rule.RuleType == "keyword" {
+			keywords, _ = rule.Content["keywords"].([]string)
+			break
+		}
+	}
+	if len(keywords) == 0 {
+		t.Fatalf("GenerateRules() missing keyword rule in %#v", rules)
+	}
+	if !containsAnyValue(keywords, "履约保证金") && !containsAnyValue(keywords, "保证金") {
+		t.Fatalf("keywords = %#v, want meaningful jieba business term", keywords)
+	}
+	for _, keyword := range keywords {
+		if len([]rune(keyword)) == 1 {
+			t.Fatalf("keywords = %#v, should not contain single-character noise", keywords)
+		}
+	}
+}
+
 func TestAnalyzeSemanticFallsBackToRules(t *testing.T) {
 	t.Setenv(EnvArkAPIKey, "")
 	t.Setenv(EnvArkEndpointID, "")

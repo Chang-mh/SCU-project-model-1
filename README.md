@@ -64,10 +64,14 @@ go run .
 | `ARK_ENDPOINT_ID` | 旧版 ChatModel 配置兼容项，未设置 `ARK_CHAT_MODEL` 时使用 | 无 |
 | `PADDLEOCR_API_URL` | PaddleOCR PDF 解析 HTTP 接口；占位为 `xxx` 时自动降级 | `xxx` |
 | `PADDLEOCR_API_KEY` | PaddleOCR API Key；占位为 `xxx` 时不发送 Authorization | `xxx` |
+| `SIMHASH_THRESHOLD` | 客户端相似文件匹配的 SimHash 汉明距离阈值，会随规则同步下发 | `3` |
+| `MAX_REQUEST_BODY_SIZE_MB` | Hertz 全局请求体大小上限；默认兼容 200MB 批量上传 | `220` |
+
+**gojieba / CGO 说明：** 服务端关键词抽取已接入 `gojieba`。在 Windows 上如需强制启用 gojieba，请确保已安装可用的 C/C++ 编译工具链，并设置 `GOJIEBA_MODE=force`；默认 Windows 环境会使用安全降级方案，避免 CGO/非 ASCII 路径导致进程崩溃。
 
 **接入点 ID 是什么?** 在方舟控制台部署模型后, 系统会生成一个接入点/模型 ID。调用 API 时将它作为 `model` 参数传入。Chat 与 Embedding 请分别填入 `ARK_CHAT_MODEL` 和 `ARK_EMBEDDING_MODEL`。
 
-未配置方舟时, 语义识别自动降级为关键词规则推理, 不影响基本功能。未配置 PaddleOCR 时，PDF 会降级为启发式文本提取。
+未配置方舟时, 语义识别自动降级为关键词规则推理, 不影响基本功能。PDF 会优先使用 Go 原生文本解析；扫描件或原生解析失败时再尝试 PaddleOCR，未配置 PaddleOCR 时会降级为启发式文本提取。
 
 ### API 接口
 
@@ -86,6 +90,16 @@ curl -F "file=@../samples/customer.txt" \
 ```bash
 curl "http://127.0.0.1:8080/api/client/rules?version=0"
 ```
+
+上报客户端扫描结果:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/api/client/scan-results" \
+  -H "Content-Type: application/json" \
+  -d '{"host_id":"host_001","scan_path":"D:/test_docs","scanned_at":"2026-06-11T10:00:00","results":[]}'
+```
+
+重复上传相同 SHA-256 的样本时，服务端会返回 `409 Conflict` 并包含已有样本信息。
 
 ## 客户端使用
 
@@ -108,10 +122,24 @@ python client.py sync --server http://127.0.0.1:8080
 python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8080
 ```
 
+扫描并上报结果:
+
+```bash
+python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8080 --report
+```
+
 查看本地敏感文件标签:
 
 ```bash
 python client.py list --sensitive-only
+python client.py list --sensitive-only --json
+```
+
+运行客户端测试:
+
+```bash
+.venv/Scripts/activate
+python -m unittest discover -p "test_*.py" -v
 ```
 
 扫描结果保存在客户端本地 `sensitive_tags.db`, 不会修改被扫描文件.

@@ -62,6 +62,12 @@ class LocalDB:
                 model_name TEXT
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS local_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str):
@@ -84,6 +90,27 @@ class LocalDB:
             (version,),
         )
         self.conn.commit()
+
+    def save_config(self, config: dict):
+        cursor = self.conn.cursor()
+        for key, value in (config or {}).items():
+            cursor.execute(
+                "INSERT OR REPLACE INTO local_config (key, value) VALUES (?, ?)",
+                (str(key), str(value)),
+            )
+        self.conn.commit()
+
+    def load_config(self) -> dict:
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT key, value FROM local_config")
+        config = {}
+        for row in cursor.fetchall():
+            value = row["value"]
+            if value is not None and value.isdigit():
+                config[row["key"]] = int(value)
+            else:
+                config[row["key"]] = value
+        return config
 
     def save_rules(self, rules, fingerprints, semantic_labels=None):
         cursor = self.conn.cursor()
