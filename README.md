@@ -62,12 +62,13 @@ go run .
 | `ARK_CHAT_MODEL` | ChatModel 接入点/模型 ID | 无 |
 | `ARK_EMBEDDING_MODEL` | Embedding 接入点/模型 ID；未配置时不生成向量，不影响上传 | 无 |
 | `ARK_ENDPOINT_ID` | 旧版 ChatModel 配置兼容项，未设置 `ARK_CHAT_MODEL` 时使用 | 无 |
+| `GOJIEBA_MODE` | 关键词抽取模式；Windows 默认留空走安全降级，需 C/C++ 编译工具链后可设为 `force` 启用 gojieba | 留空 |
 | `PADDLEOCR_API_URL` | PaddleOCR PDF 解析 HTTP 接口；占位为 `xxx` 时自动降级 | `xxx` |
 | `PADDLEOCR_API_KEY` | PaddleOCR API Key；占位为 `xxx` 时不发送 Authorization | `xxx` |
 | `SIMHASH_THRESHOLD` | 客户端相似文件匹配的 SimHash 汉明距离阈值，会随规则同步下发 | `3` |
 | `MAX_REQUEST_BODY_SIZE_MB` | Hertz 全局请求体大小上限；默认兼容 200MB 批量上传 | `220` |
 
-**gojieba / CGO 说明：** 服务端关键词抽取已接入 `gojieba`。在 Windows 上如需强制启用 gojieba，请确保已安装可用的 C/C++ 编译工具链，并设置 `GOJIEBA_MODE=force`；默认 Windows 环境会使用安全降级方案，避免 CGO/非 ASCII 路径导致进程崩溃。
+**gojieba / CGO 说明：** 服务端关键词抽取已接入 `gojieba`。在 Windows 上默认不会加载 gojieba，而是使用简单分词 + 业务词库加权的安全降级方案，避免 CGO/非 ASCII 路径导致进程崩溃；如课程演示需要展示 gojieba TF-IDF 抽取效果，请先安装可用的 C/C++ 编译工具链，再在 `.env` 中设置 `GOJIEBA_MODE=force` 后启动服务。Linux/macOS 默认会尝试启用 gojieba，也可设置 `GOJIEBA_MODE=off` 强制降级。
 
 **接入点 ID 是什么?** 在方舟控制台部署模型后, 系统会生成一个接入点/模型 ID。调用 API 时将它作为 `model` 参数传入。Chat 与 Embedding 请分别填入 `ARK_CHAT_MODEL` 和 `ARK_EMBEDDING_MODEL`。
 
