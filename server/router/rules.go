@@ -287,7 +287,7 @@ func createRuleVersion(tx *gorm.DB, changeType string) (int, error) {
 	return ver.Version, nil
 }
 
-func saveSemanticFeature(tx *gorm.DB, sampleID string, semantic core.SemanticResult) error {
+func saveSemanticFeature(tx *gorm.DB, sampleID string, version int, semantic core.SemanticResult) error {
 	labels, err := json.Marshal(semantic.SemanticLabels)
 	if err != nil {
 		return fmt.Errorf("序列化语义标签失败: %w", err)
@@ -303,6 +303,7 @@ func saveSemanticFeature(tx *gorm.DB, sampleID string, semantic core.SemanticRes
 	feature := model.SemanticFeature{
 		ID:             genSemanticID(),
 		SampleID:       sampleID,
+		Version:        version,
 		SemanticLabels: string(labels),
 		EmbeddingID:    semantic.EmbeddingID,
 		Embedding:      embedding,
@@ -360,7 +361,7 @@ func persistPreparedUpload(tx *gorm.DB, item preparedUpload, version int) error 
 	if err := tx.Create(&fp).Error; err != nil {
 		return fmt.Errorf("保存指纹失败: %w", err)
 	}
-	if err := saveSemanticFeature(tx, item.FileID, item.Semantic); err != nil {
+	if err := saveSemanticFeature(tx, item.FileID, version, item.Semantic); err != nil {
 		return err
 	}
 	return nil
@@ -463,7 +464,11 @@ func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
 	}
 
 	var semanticFeatures []model.SemanticFeature
-	if err := dal.DB.Find(&semanticFeatures).Error; err != nil {
+	semanticQuery := dal.DB
+	if clientVersion != 0 {
+		semanticQuery = semanticQuery.Where("version > ?", clientVersion)
+	}
+	if err := semanticQuery.Find(&semanticFeatures).Error; err != nil {
 		return RuleSyncResponse{}, fmt.Errorf("查询语义特征失败: %w", err)
 	}
 

@@ -13,6 +13,7 @@ type FileFingerprint struct {
 type SemanticFeature struct {
 	ID             string    `gorm:"primaryKey;size:64" json:"id"`
 	SampleID       string    `gorm:"size:64;index" json:"sample_id"`
+	Version        int       `gorm:"index" json:"version"`
 	SemanticLabels string    `gorm:"type:text" json:"semantic_labels"`
 	EmbeddingID    string    `gorm:"size:128" json:"embedding_id"`
 	Embedding      string    `gorm:"type:json" json:"embedding"`
