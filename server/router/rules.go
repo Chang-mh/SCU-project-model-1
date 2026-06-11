@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -487,26 +488,54 @@ func UploadSamplesBatch(ctx *app.RequestContext) {
 	ctx.JSON(consts.StatusOK, resp)
 }
 
+const (
+	maxZipFileCount       = 200
+	maxZipEntrySize       = 20 * 1024 * 1024
+	maxZipTotalSize       = 100 * 1024 * 1024
+	maxZipReadBufferExtra = 1 * 1024
+)
+
 func parseZip(data []byte) (map[string][]byte, error) {
 	zipReader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, err
 	}
 	files := make(map[string][]byte)
+	var totalSize uint64
 	for _, f := range zipReader.File {
 		if f.FileInfo().IsDir() {
 			continue
 		}
+		cleanName := path.Clean(strings.ReplaceAll(f.Name, "\\", "/"))
+		if cleanName == "." || strings.HasPrefix(cleanName, "../") || strings.Contains(cleanName, "/../") || path.IsAbs(cleanName) {
+			return nil, fmt.Errorf("ZIP包含非法路径: %s", f.Name)
+		}
+		if strings.EqualFold(filepath.Ext(cleanName), ".zip") {
+			return nil, fmt.Errorf("暂不支持嵌套ZIP文件: %s", f.Name)
+		}
+		if len(files) >= maxZipFileCount {
+			return nil, fmt.Errorf("ZIP文件数量超过限制: %d", maxZipFileCount)
+		}
+		if f.UncompressedSize64 > maxZipEntrySize {
+			return nil, fmt.Errorf("ZIP内文件过大: %s", f.Name)
+		}
+		totalSize += f.UncompressedSize64
+		if totalSize > maxZipTotalSize {
+			return nil, fmt.Errorf("ZIP解压总大小超过限制: %d bytes", maxZipTotalSize)
+		}
 		rc, err := f.Open()
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("打开ZIP内文件失败 %s: %w", f.Name, err)
 		}
-		content, err := io.ReadAll(rc)
+		content, err := io.ReadAll(io.LimitReader(rc, maxZipEntrySize+maxZipReadBufferExtra))
 		rc.Close()
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("读取ZIP内文件失败 %s: %w", f.Name, err)
 		}
-		files[f.Name] = content
+		if len(content) > maxZipEntrySize {
+			return nil, fmt.Errorf("ZIP内文件读取超过限制: %s", f.Name)
+		}
+		files[cleanName] = content
 	}
 	return files, nil
 }
@@ -600,7 +629,7 @@ func UploadZip(ctx *app.RequestContext) {
 	if ext == ".zip" {
 		files, err = parseZip(data)
 		if err != nil {
-			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "无法解析ZIP文件"})
+			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 	} else {
