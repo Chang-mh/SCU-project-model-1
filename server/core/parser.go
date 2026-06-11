@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ledongthuc/pdf"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -44,15 +45,19 @@ func ExtractText(fileName string, data []byte) (string, string, error) {
 		text, err := extractDOCX(data)
 		return cleanText(text), ext, err
 	case "pdf":
-		text, err := extractPDFWithPaddleOCR(fileName, data)
-		if err != nil {
-			fallback := extractPDFLikeText(data)
-			if fallback != "" {
-				return cleanText(fallback), ext, fmt.Errorf("paddleocr pdf extraction failed, used fallback: %w", err)
-			}
-			return "", ext, err
+		text, nativeErr := extractPDFNative(data)
+		if nativeErr == nil && strings.TrimSpace(text) != "" {
+			return cleanText(text), ext, nil
 		}
-		return cleanText(text), ext, nil
+		text, ocrErr := extractPDFWithPaddleOCR(fileName, data)
+		if ocrErr == nil {
+			return cleanText(text), ext, nil
+		}
+		fallback := extractPDFLikeText(data)
+		if fallback != "" {
+			return cleanText(fallback), ext, fmt.Errorf("pdf extraction failed, used fallback: native=%v paddleocr=%v", nativeErr, ocrErr)
+		}
+		return "", ext, fmt.Errorf("pdf extraction failed: native=%v paddleocr=%v", nativeErr, ocrErr)
 	default:
 		return cleanText(bytesToText(data)), ext, nil
 	}
@@ -135,6 +140,33 @@ func extractXMLText(data []byte) string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+func extractPDFNative(data []byte) (string, error) {
+	reader := bytes.NewReader(data)
+	pdfReader, err := pdf.NewReader(reader, int64(len(data)))
+	if err != nil {
+		return "", err
+	}
+
+	var parts []string
+	for i := 1; i <= pdfReader.NumPage(); i++ {
+		page := pdfReader.Page(i)
+		if page.V.IsNull() {
+			continue
+		}
+		text, err := page.GetPlainText(nil)
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) == 0 {
+		return "", errors.New("pdf has no extractable text")
+	}
+	return strings.Join(parts, "\n"), nil
 }
 
 func extractPDFWithPaddleOCR(fileName string, data []byte) (string, error) {

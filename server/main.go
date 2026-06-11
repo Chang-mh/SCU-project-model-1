@@ -3,23 +3,20 @@ package main
 import (
 	"context"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strconv"
+	"syscall"
+	"time"
 
 	"scu-project-model-1/server/core"
 	"scu-project-model-1/server/dal"
 	"scu-project-model-1/server/router"
 
-	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
-
-func wrap(handler func(*app.RequestContext)) app.HandlerFunc {
-	return func(_ context.Context, c *app.RequestContext) {
-		handler(c)
-	}
-}
 
 func main() {
 	logger, _ := zap.NewProduction()
@@ -55,24 +52,73 @@ func main() {
 		zap.L().Warn("火山方舟未配置, 语义识别将使用规则推理降级方案")
 	}
 
-	h := server.Default(server.WithHostPorts(addr))
+	maxRequestBodySize := maxRequestBodySizeBytes()
+	h := server.Default(
+		server.WithHostPorts(addr),
+		server.WithMaxRequestBodySize(maxRequestBodySize),
+	)
 
-	h.POST("/api/server/samples", wrap(router.UploadSample))
-	h.POST("/api/server/samples/batch", wrap(router.UploadSamplesBatch))
-	h.POST("/api/server/samples/zip", wrap(router.UploadZip))
-	h.GET("/api/server/samples", wrap(router.ListSamples))
-	h.GET("/api/server/sensitive-files", wrap(router.GetSensitiveFilesList))
-	h.GET("/api/server/sensitive-files/:file_hash", wrap(router.GetSensitiveFileInfo))
-	h.POST("/api/server/sensitive-files/query", wrap(router.QuerySensitiveFile))
-	h.POST("/api/server/regex-test", wrap(router.RegexTest))
-	h.POST("/api/server/fingerprint", wrap(router.FingerprintCompute))
-	h.POST("/api/server/content-scan", wrap(router.ContentScan))
+	h.POST("/api/server/samples", router.UploadSample)
+	h.POST("/api/server/samples/batch", router.UploadSamplesBatch)
+	h.POST("/api/server/samples/zip", router.UploadZip)
+	h.GET("/api/server/samples", router.ListSamples)
+	h.GET("/api/server/sensitive-files", router.GetSensitiveFilesList)
+	h.GET("/api/server/sensitive-files/:file_hash", router.GetSensitiveFileInfo)
+	h.POST("/api/server/sensitive-files/query", router.QuerySensitiveFile)
+	h.POST("/api/server/regex-test", router.RegexTest)
+	h.POST("/api/server/fingerprint", router.FingerprintCompute)
+	h.POST("/api/server/content-scan", router.ContentScan)
 
-	h.GET("/api/client/rules", wrap(router.SyncRules))
-	h.POST("/api/client/rules/batch", wrap(router.BatchSyncRules))
+	h.GET("/api/client/rules", router.SyncRules)
+	h.POST("/api/client/rules/batch", router.BatchSyncRules)
+	h.POST("/api/client/scan-results", router.ReportScanResults)
 
-	zap.L().Info("敏感文件识别服务启动", zap.String("addr", addr))
+	go waitForShutdown(h, logger)
+
+	zap.L().Info("敏感文件识别服务启动", zap.String("addr", addr), zap.Int("max_request_body_size", maxRequestBodySize))
 	h.Spin()
+}
+
+func maxRequestBodySizeBytes() int {
+	const defaultMB = 220
+	mb := defaultMB
+	if value := os.Getenv("MAX_REQUEST_BODY_SIZE_MB"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			zap.L().Warn("MAX_REQUEST_BODY_SIZE_MB 无效，使用默认值", zap.String("value", value), zap.Int("default_mb", defaultMB))
+		} else {
+			mb = parsed
+		}
+	}
+	if mb < 1 {
+		mb = 1
+	}
+	if mb > 512 {
+		zap.L().Warn("MAX_REQUEST_BODY_SIZE_MB 超过上限，已限制为 512MB", zap.Int("requested_mb", mb))
+		mb = 512
+	}
+	return mb * 1024 * 1024
+}
+
+func waitForShutdown(h *server.Hertz, logger *zap.Logger) {
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	zap.L().Info("收到退出信号，正在优雅关闭服务")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.Shutdown(ctx); err != nil {
+		zap.L().Error("HTTP 服务关闭失败", zap.Error(err))
+	}
+	if dal.DB != nil {
+		if sqlDB, err := dal.DB.DB(); err == nil {
+			if err := sqlDB.Close(); err != nil {
+				zap.L().Warn("数据库连接关闭失败", zap.Error(err))
+			}
+		}
+	}
+	_ = logger.Sync()
 }
 
 // findEnvFile 从当前目录向上查找 .env 文件

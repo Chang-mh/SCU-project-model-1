@@ -98,12 +98,14 @@ def scan_directory(path: str, db: LocalDB) -> list[dict]:
     rules = db.load_rules()
     fingerprints = db.load_fingerprints()
     semantic_labels = db.load_semantic_labels()
-    logger.info(f"加载本地规则: {len(rules)} 条, 指纹: {len(fingerprints)} 条, 语义标签: {len(semantic_labels)} 条")
+    config = db.load_config()
+    simhash_threshold = int(config.get("simhash_threshold", 3))
+    logger.info(f"加载本地规则: {len(rules)} 条, 指纹: {len(fingerprints)} 条, 语义标签: {len(semantic_labels)} 条, SimHash阈值: {simhash_threshold}")
 
     results = []
     for file_path in iter_files(root):
         try:
-            result = scan_file(file_path, rules, fingerprints, semantic_labels)
+            result = scan_file(file_path, rules, fingerprints, semantic_labels, simhash_threshold=simhash_threshold)
             db.upsert_file_tag(
                 file_path=result.file_path,
                 file_hash=result.file_hash,
@@ -141,7 +143,7 @@ def iter_files(root: Path) -> Iterable[Path]:
         yield file_path
 
 
-def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None) -> ScanResult:
+def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, simhash_threshold: int = 3) -> ScanResult:
     data = file_path.read_bytes()
     sha256 = compute_sha256(data)
 
@@ -173,7 +175,7 @@ def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels:
         skip_reason = "pdf_text_empty" if PdfReader is not None else "pdf_reader_missing"
 
     simhash = compute_simhash(text) if text else ""
-    sim_hit = match_simhash(simhash, fingerprints) if simhash else None
+    sim_hit = match_simhash(simhash, fingerprints, threshold=simhash_threshold) if simhash else None
     regex_hits = match_regex(text, rules) if text else []
     keyword_hits = match_keyword(text, rules) if text else []
     combined_hits = match_combined(text, rules) if text else []

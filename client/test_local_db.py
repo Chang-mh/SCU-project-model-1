@@ -85,6 +85,17 @@ class LocalDBTest(unittest.TestCase):
         self.assertEqual(labels["file_1"]["semantic_labels"], ["客户名单", "报价信息"])
         self.assertEqual(labels["file_1"]["embedding_id"], "emb_1")
         self.assertEqual(labels["file_1"]["model_name"], "rule-fallback")
+    def test_save_and_load_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "tags.db"
+            db = LocalDB(str(db_path))
+            try:
+                db.save_config({"simhash_threshold": 5})
+                config = db.load_config()
+            finally:
+                db.close()
+
+        self.assertEqual(config["simhash_threshold"], 5)
 
 
 if __name__ == "__main__":

@@ -147,9 +147,12 @@ func analyzeWithLLM(text, sensitiveType, riskLevel string) (SemanticResult, erro
 }
 
 func buildSemanticPrompt(sensitiveType, riskLevel, text string) string {
-	prompt := strings.Replace(semanticPromptTemplate, "%s", sensitiveType, 1)
-	prompt = strings.Replace(prompt, "%s", riskLevel, 1)
-	return strings.Replace(prompt, "%s", text, 1)
+	replacer := strings.NewReplacer(
+		"{{SENSITIVE_TYPE}}", sensitiveType,
+		"{{RISK_LEVEL}}", riskLevel,
+		"{{DOCUMENT_TEXT}}", text,
+	)
+	return replacer.Replace(semanticPromptTemplate)
 }
 
 func parseLLMResponse(content, sensitiveType, riskLevel string) (SemanticResult, error) {

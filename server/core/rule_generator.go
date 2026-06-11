@@ -2,10 +2,15 @@ package core
 
 import (
 	"encoding/json"
+	"os"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
+
+	"github.com/yanyiwu/gojieba"
 )
 
 type RuleData struct {
@@ -48,12 +53,24 @@ var businessKeywords = []string{
 	"客户名称", "客户名单", "联系人", "联系方式", "报价", "报价单", "合同", "合同编号", "合同金额", "未公开", "保密", "不得披露",
 	"财务", "预算", "薪资", "工资", "奖金", "绩效", "战略规划", "商业计划", "招投标", "投标", "源代码",
 	"漏洞", "运维账号", "数据库密码", "内部接口", "系统架构", "研发设计", "财报", "成本", "利润", "API Key", "access token",
+	"履约保证金", "付款节点", "验收条款", "违约责任", "甲方", "乙方", "未公开财报", "内部培训资料", "研发设计文档",
 }
 
 var stopWords = map[string]bool{
+	"的": true, "了": true, "在": true, "是": true, "我": true, "有": true, "和": true, "就": true,
+	"不": true, "人": true, "都": true, "一": true, "一个": true, "上": true, "也": true, "很": true,
+	"到": true, "说": true, "要": true, "去": true, "你": true, "会": true, "着": true, "没有": true,
+	"看": true, "好": true, "自己": true, "这": true, "那": true, "他": true, "她": true, "它": true,
+	"们": true, "什么": true, "为": true, "所以": true, "因为": true, "但是": true, "可以": true,
+	"这个": true, "那个": true, "进行": true, "使用": true, "以及": true, "通过": true, "需要": true,
 	"文件": true, "文档": true, "内容": true, "信息": true, "数据": true, "资料": true, "包含": true, "相关": true,
-	"the": true, "and": true, "this": true, "that": true, "with": true,
+	"the": true, "and": true, "this": true, "that": true, "with": true, "for": true, "from": true, "have": true, "has": true,
 }
+
+var (
+	jiebaOnce      sync.Once
+	jiebaSegmenter *gojieba.Jieba
+)
 
 type combinedRuleTemplate struct {
 	Name       string
@@ -180,56 +197,58 @@ func RuleContentJSON(content map[string]any) string {
 }
 
 func extractKeywords(text, sensitiveType, description string) []string {
-	seen := make(map[string]int)
 	combined := text + " " + sensitiveType + " " + description
-	for _, keyword := range businessKeywords {
-		if strings.Contains(strings.ToLower(combined), strings.ToLower(keyword)) {
-			seen[keyword] += 20
+
+	scores := make(map[string]float64)
+	addScore := func(word string, score float64) {
+		word = strings.TrimSpace(word)
+		if !isMeaningfulKeyword(word) {
+			return
 		}
+		scores[word] += score
 	}
-	for _, keyword := range businessKeywords {
-		if sensitiveType != "" && strings.Contains(strings.ToLower(keyword), strings.ToLower(sensitiveType)) {
-			seen[keyword] += 8
+
+	if canUseJieba() {
+		jieba := getJieba()
+		for rank, keyword := range jieba.Extract(combined, 30) {
+			addScore(keyword, float64(60-rank))
 		}
-		if description != "" && strings.Contains(strings.ToLower(description), strings.ToLower(keyword)) {
-			seen[keyword] += 12
+		for _, token := range jieba.CutForSearch(combined, true) {
+			addScore(token, 1)
+		}
+	} else {
+		for _, token := range tokenizeWords(combined) {
+			addScore(token, 1)
 		}
 	}
 
-	for _, token := range tokenizeWords(combined) {
-		if len([]rune(token)) < 2 || isStopWord(token) {
-			continue
+	for _, keyword := range businessKeywords {
+		combinedLower := strings.ToLower(combined)
+		keywordLower := strings.ToLower(keyword)
+		if strings.Contains(combinedLower, keywordLower) {
+			addScore(keyword, 80)
 		}
-		weight := 1
-		if strings.Contains(sensitiveType, token) || strings.Contains(description, token) {
-			weight = 3
+		if sensitiveType != "" && strings.Contains(strings.ToLower(sensitiveType), keywordLower) {
+			addScore(keyword, 30)
 		}
-		seen[token] += weight
-	}
-
-	for _, phrase := range cjkNgrams(combined, 2, 4) {
-		if isStopWord(phrase) {
-			continue
+		if description != "" && strings.Contains(strings.ToLower(description), keywordLower) {
+			addScore(keyword, 40)
 		}
-		seen[phrase] += 2
 	}
 
 	type pair struct {
 		word  string
-		count int
+		score float64
 	}
-	var pairs []pair
-	for word, count := range seen {
-		if isStopWord(word) {
-			continue
-		}
-		pairs = append(pairs, pair{word: word, count: count})
+	pairs := make([]pair, 0, len(scores))
+	for word, score := range scores {
+		pairs = append(pairs, pair{word: word, score: score})
 	}
 	sort.Slice(pairs, func(i, j int) bool {
-		if pairs[i].count == pairs[j].count {
+		if pairs[i].score == pairs[j].score {
 			return pairs[i].word < pairs[j].word
 		}
-		return pairs[i].count > pairs[j].count
+		return pairs[i].score > pairs[j].score
 	})
 
 	limit := 12
@@ -241,6 +260,52 @@ func extractKeywords(text, sensitiveType, description string) []string {
 		keywords = append(keywords, pairs[i].word)
 	}
 	return keywords
+}
+
+func canUseJieba() bool {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("GOJIEBA_MODE")))
+	if mode == "off" || mode == "false" || mode == "0" {
+		return false
+	}
+	if mode == "force" || mode == "on" || mode == "true" || mode == "1" {
+		return true
+	}
+	// gojieba/cppjieba may crash in some Windows CGO environments, especially when
+	// the project path contains non-ASCII characters. Keep the dependency and
+	// support explicit opt-in while preserving a safe default for tests/builds.
+	return runtime.GOOS != "windows"
+}
+
+func getJieba() *gojieba.Jieba {
+	jiebaOnce.Do(func() {
+		jiebaSegmenter = gojieba.NewJieba()
+		for _, keyword := range businessKeywords {
+			jiebaSegmenter.AddWord(keyword)
+		}
+	})
+	return jiebaSegmenter
+}
+
+func isMeaningfulKeyword(word string) bool {
+	word = strings.TrimSpace(word)
+	if word == "" || isStopWord(word) {
+		return false
+	}
+	runes := []rune(word)
+	if len(runes) < 2 || len(runes) > 32 {
+		return false
+	}
+	allDigit := true
+	for _, r := range runes {
+		if !unicode.IsDigit(r) {
+			allDigit = false
+			break
+		}
+	}
+	if allDigit {
+		return false
+	}
+	return true
 }
 
 func cjkNgrams(text string, minN, maxN int) []string {

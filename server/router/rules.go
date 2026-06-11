@@ -3,12 +3,14 @@ package router
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -46,6 +48,11 @@ type RuleSyncResponse struct {
 	Rules          []RuleResp     `json:"rules"`
 	Fingerprints   []FingerResp   `json:"fingerprints"`
 	SemanticLabels []SemanticResp `json:"semantic_labels"`
+	Config         SyncConfig     `json:"config"`
+}
+
+type SyncConfig struct {
+	SimHashThreshold int `json:"simhash_threshold"`
 }
 
 type RuleResp struct {
@@ -116,6 +123,24 @@ const (
 	maxFileNameLength = 255
 )
 
+func simhashThresholdFromEnv() int {
+	const defaultThreshold = 3
+	value := strings.TrimSpace(os.Getenv("SIMHASH_THRESHOLD"))
+	if value == "" {
+		return defaultThreshold
+	}
+	threshold, err := strconv.Atoi(value)
+	if err != nil || threshold < 0 || threshold > 16 {
+		zap.L().Warn("SIMHASH_THRESHOLD 无效，使用默认值", zap.String("value", value), zap.Int("default", defaultThreshold))
+		return defaultThreshold
+	}
+	return threshold
+}
+
+func syncConfig() SyncConfig {
+	return SyncConfig{SimHashThreshold: simhashThresholdFromEnv()}
+}
+
 func normalizeRiskLevel(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "critical", "high", "medium", "low", "info":
@@ -173,6 +198,62 @@ type preparedUpload struct {
 	Semantic      core.SemanticResult
 	ParseWarn     error
 	OriginalBytes int
+}
+
+type duplicateUpload struct {
+	FileName        string `json:"file_name"`
+	SHA256          string `json:"sha256"`
+	Reason          string `json:"reason"`
+	SensitiveFileID string `json:"sensitive_file_id,omitempty"`
+	ExistingName    string `json:"existing_file_name,omitempty"`
+	UploadedAt      string `json:"uploaded_at,omitempty"`
+}
+
+func findExistingSampleBySHA(db *gorm.DB, sha256 string) (*model.SensitiveSample, bool, error) {
+	var sample model.SensitiveSample
+	err := db.Where("sha256 = ?", sha256).First(&sample).Error
+	if err == nil {
+		return &sample, true, nil
+	}
+	if err == gorm.ErrRecordNotFound {
+		return nil, false, nil
+	}
+	return nil, false, err
+}
+
+func detectDuplicateUploads(items []preparedUpload) ([]duplicateUpload, error) {
+	seen := make(map[string]string)
+	duplicates := make([]duplicateUpload, 0)
+	for _, item := range items {
+		if firstName, ok := seen[item.SHA256]; ok {
+			duplicates = append(duplicates, duplicateUpload{FileName: item.FileName, SHA256: item.SHA256, Reason: "request_duplicate", ExistingName: firstName})
+			continue
+		}
+		seen[item.SHA256] = item.FileName
+
+		existing, found, err := findExistingSampleBySHA(dal.DB, item.SHA256)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			duplicates = append(duplicates, duplicateUpload{
+				FileName:        item.FileName,
+				SHA256:          item.SHA256,
+				Reason:          "existing_sample",
+				SensitiveFileID: existing.ID,
+				ExistingName:    existing.FileName,
+				UploadedAt:      existing.UploadedAt.Format(time.RFC3339),
+			})
+		}
+	}
+	return duplicates, nil
+}
+
+func writeDuplicateResponse(ctx *app.RequestContext, duplicates []duplicateUpload) {
+	ctx.JSON(consts.StatusConflict, map[string]any{
+		"error":      "上传文件已存在于敏感文件库或当前请求中",
+		"duplicates": duplicates,
+	})
 }
 
 func prepareUpload(fileName string, data []byte, sensitiveType, riskLevel, description string) preparedUpload {
@@ -301,7 +382,7 @@ func sampleUploadResponse(item preparedUpload, version int) SampleUploadResponse
 	}
 }
 
-func UploadSample(ctx *app.RequestContext) {
+func UploadSample(_ context.Context, ctx *app.RequestContext) {
 	fileHeader, err := ctx.FormFile("file")
 	if err != nil {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "缺少文件字段"})
@@ -319,6 +400,17 @@ func UploadSample(ctx *app.RequestContext) {
 	description := string(ctx.FormValue("description"))
 
 	item := prepareUpload(fileHeader.Filename, data, sensitiveType, riskLevel, description)
+	duplicates, err := detectDuplicateUploads([]preparedUpload{item})
+	if err != nil {
+		zap.L().Error("检查重复样本失败", zap.String("file", fileHeader.Filename), zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "检查重复样本失败"})
+		return
+	}
+	if len(duplicates) > 0 {
+		writeDuplicateResponse(ctx, duplicates)
+		return
+	}
+
 	var newVersion int
 	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
 		version, err := createRuleVersion(tx, "upload")
@@ -351,7 +443,7 @@ func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
 	var latest model.RuleVersion
 	if err := dal.DB.Order("version desc").First(&latest).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return RuleSyncResponse{LatestVersion: 0, FullSync: clientVersion == 0}, nil
+			return RuleSyncResponse{LatestVersion: 0, FullSync: clientVersion == 0, Config: syncConfig()}, nil
 		}
 		return RuleSyncResponse{}, fmt.Errorf("查询最新规则版本失败: %w", err)
 	}
@@ -405,10 +497,11 @@ func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
 		Rules:          ruleResps,
 		Fingerprints:   fingerResps,
 		SemanticLabels: buildSemanticResps(semanticFeatures),
+		Config:         syncConfig(),
 	}, nil
 }
 
-func SyncRules(ctx *app.RequestContext) {
+func SyncRules(_ context.Context, ctx *app.RequestContext) {
 	versionStr := ctx.Query("version")
 	if versionStr == "" {
 		versionStr = "0"
@@ -427,7 +520,7 @@ func SyncRules(ctx *app.RequestContext) {
 	ctx.JSON(consts.StatusOK, resp)
 }
 
-func GetSensitiveFileInfo(ctx *app.RequestContext) {
+func GetSensitiveFileInfo(_ context.Context, ctx *app.RequestContext) {
 	fileHash := ctx.Param("file_hash")
 	var sample model.SensitiveSample
 	if err := dal.DB.Where("sha256 = ?", fileHash).First(&sample).Error; err != nil {
@@ -444,13 +537,13 @@ func GetSensitiveFileInfo(ctx *app.RequestContext) {
 	})
 }
 
-func ListSamples(ctx *app.RequestContext) {
+func ListSamples(_ context.Context, ctx *app.RequestContext) {
 	var samples []model.SensitiveSample
 	dal.DB.Order("uploaded_at desc").Limit(50).Find(&samples)
 	ctx.JSON(consts.StatusOK, samples)
 }
 
-func QuerySensitiveFile(ctx *app.RequestContext) {
+func QuerySensitiveFile(_ context.Context, ctx *app.RequestContext) {
 	var query struct {
 		FileHash string `json:"file_hash"`
 		FilePath string `json:"file_path"`
@@ -488,7 +581,7 @@ func QuerySensitiveFile(ctx *app.RequestContext) {
 	})
 }
 
-func UploadSamplesBatch(ctx *app.RequestContext) {
+func UploadSamplesBatch(_ context.Context, ctx *app.RequestContext) {
 	form, err := ctx.MultipartForm()
 	if err != nil {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "缺少文件字段"})
@@ -526,6 +619,17 @@ func UploadSamplesBatch(ctx *app.RequestContext) {
 			return
 		}
 		items = append(items, prepareUpload(fh.Filename, data, sensitiveType, riskLevel, description))
+	}
+
+	duplicates, err := detectDuplicateUploads(items)
+	if err != nil {
+		zap.L().Error("检查批量上传重复样本失败", zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "检查重复样本失败"})
+		return
+	}
+	if len(duplicates) > 0 {
+		writeDuplicateResponse(ctx, duplicates)
+		return
 	}
 
 	results := make([]SampleUploadResponse, 0, len(items))
@@ -612,7 +716,7 @@ func parseZip(data []byte) (map[string][]byte, error) {
 	return files, nil
 }
 
-func GetSensitiveFilesList(ctx *app.RequestContext) {
+func GetSensitiveFilesList(_ context.Context, ctx *app.RequestContext) {
 	keyword := ctx.Query("keyword")
 	sensitiveType := ctx.Query("sensitive_type")
 	riskLevel := ctx.Query("risk_level")
@@ -632,7 +736,7 @@ func GetSensitiveFilesList(ctx *app.RequestContext) {
 	ctx.JSON(consts.StatusOK, samples)
 }
 
-func RegexTest(ctx *app.RequestContext) {
+func RegexTest(_ context.Context, ctx *app.RequestContext) {
 	var req struct {
 		Pattern string `json:"pattern"`
 		Text    string `json:"text"`
@@ -650,21 +754,15 @@ func RegexTest(ctx *app.RequestContext) {
 	ctx.JSON(consts.StatusOK, map[string]any{"matches": matches, "count": len(matches)})
 }
 
-func FingerprintCompute(ctx *app.RequestContext) {
+func FingerprintCompute(_ context.Context, ctx *app.RequestContext) {
 	fileHeader, err := ctx.FormFile("file")
 	if err != nil {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "缺少文件"})
 		return
 	}
-	file, err := fileHeader.Open()
+	data, err := readUploadFileLimited(fileHeader, maxUploadFileSize)
 	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "无法读取文件"})
-		return
-	}
-	defer file.Close()
-	data, err := io.ReadAll(file)
-	if err != nil {
-		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "读取文件失败"})
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	sha256 := core.SHA256Hex(data)
@@ -677,7 +775,7 @@ func FingerprintCompute(ctx *app.RequestContext) {
 	})
 }
 
-func UploadZip(ctx *app.RequestContext) {
+func UploadZip(_ context.Context, ctx *app.RequestContext) {
 	fileHeader, err := ctx.FormFile("file")
 	if err != nil {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "缺少文件"})
@@ -710,6 +808,17 @@ func UploadZip(ctx *app.RequestContext) {
 		items = append(items, prepareUpload(name, content, sensitiveType, riskLevel, description))
 	}
 
+	duplicates, err := detectDuplicateUploads(items)
+	if err != nil {
+		zap.L().Error("检查ZIP上传重复样本失败", zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "检查重复样本失败"})
+		return
+	}
+	if len(duplicates) > 0 {
+		writeDuplicateResponse(ctx, duplicates)
+		return
+	}
+
 	var newVersion int
 	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
 		version, err := createRuleVersion(tx, "zip_upload")
@@ -737,7 +846,7 @@ func UploadZip(ctx *app.RequestContext) {
 	ctx.JSON(consts.StatusOK, map[string]any{"total": len(results), "results": results})
 }
 
-func BatchSyncRules(ctx *app.RequestContext) {
+func BatchSyncRules(_ context.Context, ctx *app.RequestContext) {
 	var req struct {
 		Rules []RuleSyncQuery `json:"rules"`
 	}
@@ -755,9 +864,66 @@ func BatchSyncRules(ctx *app.RequestContext) {
 			"rules":           resp.Rules,
 			"fingerprints":    resp.Fingerprints,
 			"semantic_labels": resp.SemanticLabels,
+			"config":          resp.Config,
 		})
 	}
 	ctx.JSON(consts.StatusOK, map[string]any{"results": results})
+}
+
+type ScanResultReport struct {
+	HostID    string      `json:"host_id"`
+	ScanPath  string      `json:"scan_path"`
+	ScannedAt string      `json:"scanned_at"`
+	Results   []ScanEntry `json:"results"`
+}
+
+type ScanEntry struct {
+	FilePath        string         `json:"file_path"`
+	FileHash        string         `json:"file_hash"`
+	Sensitive       bool           `json:"sensitive"`
+	SensitiveType   string         `json:"sensitive_type"`
+	RiskLevel       string         `json:"risk_level"`
+	SensitiveFileID string         `json:"sensitive_file_id"`
+	MatchScore      int            `json:"match_score"`
+	ConfidenceLevel string         `json:"confidence_level"`
+	MatchDetail     map[string]any `json:"match_detail"`
+}
+
+func ReportScanResults(_ context.Context, ctx *app.RequestContext) {
+	var report ScanResultReport
+	if err := json.Unmarshal(ctx.Request.Body(), &report); err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "请求体解析失败"})
+		return
+	}
+	if strings.TrimSpace(report.HostID) == "" {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "host_id 不能为空"})
+		return
+	}
+	if report.Results == nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "results 不能为空"})
+		return
+	}
+	if len(report.Results) > 10000 {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "扫描结果数量超过限制: 10000"})
+		return
+	}
+
+	confidenceCounts := map[string]int{}
+	for _, result := range report.Results {
+		confidence := result.ConfidenceLevel
+		if confidence == "" {
+			confidence = "unknown"
+		}
+		confidenceCounts[confidence]++
+	}
+	zap.L().Info("收到客户端扫描结果上报",
+		zap.String("host_id", report.HostID),
+		zap.String("scan_path", report.ScanPath),
+		zap.String("scanned_at", report.ScannedAt),
+		zap.Int("result_count", len(report.Results)),
+		zap.Any("confidence_counts", confidenceCounts),
+	)
+	ctx.JSON(consts.StatusOK, map[string]any{"status": "received", "received": len(report.Results)})
 }
 
 type RuleSyncQuery struct {
@@ -774,7 +940,7 @@ func getRuleSet(clientVersion int) RuleSyncResponse {
 	return resp
 }
 
-func ContentScan(ctx *app.RequestContext) {
+func ContentScan(_ context.Context, ctx *app.RequestContext) {
 	var req struct {
 		Content string `json:"content"`
 	}
