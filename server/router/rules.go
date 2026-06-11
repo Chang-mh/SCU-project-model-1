@@ -748,19 +748,7 @@ func ContentScan(ctx *app.RequestContext) {
 		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "缺少内容"})
 		return
 	}
-	results := make([]map[string]any, 0)
-	for _, rule := range core.BuiltinRegexRules {
-		re, _ := regexp.Compile(rule.Pattern)
-		matches := re.FindAllString(req.Content, -1)
-		if len(matches) > 0 {
-			results = append(results, map[string]any{
-				"rule_name":  rule.Name,
-				"pattern":    rule.Pattern,
-				"risk_level": rule.RiskLevel,
-				"matches":    matches,
-			})
-		}
-	}
+	results := core.MatchBuiltinRegex(req.Content)
 	ctx.JSON(consts.StatusOK, map[string]any{
 		"total":   len(results),
 		"results": results,
