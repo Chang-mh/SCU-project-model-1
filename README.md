@@ -57,6 +57,7 @@ go run .
 
 | 环境变量 | 说明 | 默认值 |
 |---|---|---|
+| `SERVER_API_TOKEN` | 可选 API Token；设置为非空且非 `change-me` 后所有 API 需携带 `Authorization: Bearer <token>` | `change-me` |
 | `ARK_API_KEY` | 方舟 API Key，ChatModel/Embedding 共用 | 无 |
 | `ARK_BASE_URL` | 方舟 OpenAI-compatible API 端点 | `https://ark.cn-beijing.volces.com/api/v3` |
 | `ARK_CHAT_MODEL` | ChatModel 接入点/模型 ID | 无 |
@@ -79,7 +80,8 @@ go run .
 上传样本:
 
 ```bash
-curl -F "file=@../samples/customer.txt" \
+curl -H "Authorization: Bearer $SERVER_API_TOKEN" \
+  -F "file=@../samples/customer.txt" \
   -F "sensitive_type=客户资料" \
   -F "risk_level=high" \
   -F "description=客户报价和联系人信息" \
@@ -89,7 +91,7 @@ curl -F "file=@../samples/customer.txt" \
 同步规则:
 
 ```bash
-curl "http://127.0.0.1:8080/api/client/rules?version=0"
+curl -H "Authorization: Bearer $SERVER_API_TOKEN" "http://127.0.0.1:8080/api/client/rules?version=0"
 ```
 
 上报客户端扫描结果:
@@ -97,6 +99,7 @@ curl "http://127.0.0.1:8080/api/client/rules?version=0"
 ```bash
 curl -X POST "http://127.0.0.1:8080/api/client/scan-results" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SERVER_API_TOKEN" \
   -d '{"host_id":"host_001","scan_path":"D:/test_docs","scanned_at":"2026-06-11T10:00:00","results":[]}'
 ```
 
@@ -114,19 +117,19 @@ pip install -r requirements.txt
 同步规则:
 
 ```bash
-python client.py sync --server http://127.0.0.1:8080
+python client.py sync --server http://127.0.0.1:8080 --token $SERVER_API_TOKEN
 ```
 
 扫描目录:
 
 ```bash
-python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8080
+python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8080 --token $SERVER_API_TOKEN
 ```
 
 扫描并上报结果:
 
 ```bash
-python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8080 --report
+python client.py scan --path "D:/test_docs" --server http://127.0.0.1:8080 --report --token $SERVER_API_TOKEN
 ```
 
 查看本地敏感文件标签:

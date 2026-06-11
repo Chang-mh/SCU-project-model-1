@@ -7,7 +7,7 @@ import requests
 
 from local_db import LocalDB
 from scanner import scan_directory
-from sync import sync_rules
+from sync import auth_headers, sync_rules
 
 
 @unittest.skipUnless(os.getenv("MODULE_ONE_E2E_SERVER"), "设置 MODULE_ONE_E2E_SERVER 后运行端到端测试")
@@ -26,6 +26,7 @@ class ModuleOneE2ETest(unittest.TestCase):
                     f"{server}/api/server/samples",
                     files={"file": (sample_path.name, fh, "text/plain")},
                     data={"sensitive_type": "客户报价", "risk_level": "high"},
+                    headers=auth_headers(),
                     timeout=30,
                 )
             resp.raise_for_status()

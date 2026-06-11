@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -13,7 +15,9 @@ import (
 	"scu-project-model-1/server/dal"
 	"scu-project-model-1/server/router"
 
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
@@ -57,6 +61,7 @@ func main() {
 		server.WithHostPorts(addr),
 		server.WithMaxRequestBodySize(maxRequestBodySize),
 	)
+	h.Use(apiTokenAuthMiddleware(os.Getenv("SERVER_API_TOKEN")))
 
 	h.POST("/api/server/samples", router.UploadSample)
 	h.POST("/api/server/samples/batch", router.UploadSamplesBatch)
@@ -77,6 +82,30 @@ func main() {
 
 	zap.L().Info("敏感文件识别服务启动", zap.String("addr", addr), zap.Int("max_request_body_size", maxRequestBodySize))
 	h.Spin()
+}
+
+func apiTokenAuthMiddleware(token string) app.HandlerFunc {
+	token = strings.TrimSpace(token)
+	if token == "" || token == "change-me" {
+		if token == "change-me" {
+			zap.L().Warn("SERVER_API_TOKEN 使用默认占位值，API Token 鉴权未启用")
+		} else {
+			zap.L().Warn("SERVER_API_TOKEN 未配置，API Token 鉴权未启用")
+		}
+		return func(c context.Context, ctx *app.RequestContext) {
+			ctx.Next(c)
+		}
+	}
+
+	expected := "Bearer " + token
+	return func(c context.Context, ctx *app.RequestContext) {
+		authorization := strings.TrimSpace(ctx.Request.Header.Get(consts.HeaderAuthorization))
+		if subtle.ConstantTimeCompare([]byte(authorization), []byte(expected)) != 1 {
+			ctx.AbortWithStatusJSON(consts.StatusUnauthorized, map[string]string{"error": "未授权，请提供有效的 Authorization: Bearer <token>"})
+			return
+		}
+		ctx.Next(c)
+	}
 }
 
 func maxRequestBodySizeBytes() int {

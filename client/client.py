@@ -12,11 +12,11 @@ from loguru import logger
 try:
     from local_db import LocalDB
     from scanner import dump_results, scan_directory
-    from sync import sync_rules
+    from sync import auth_headers, sync_rules
 except ImportError:
     from client.local_db import LocalDB
     from client.scanner import dump_results, scan_directory
-    from client.sync import sync_rules
+    from client.sync import auth_headers, sync_rules
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,10 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser("sync", help="同步服务端敏感文件规则库")
     sync_parser.add_argument("--server", default="http://127.0.0.1:8080", help="服务端地址")
+    sync_parser.add_argument("--token", default=None, help="API Token；未提供时读取 SERVER_API_TOKEN")
 
     scan_parser = subparsers.add_parser("scan", help="扫描指定目录或文件")
     scan_parser.add_argument("--path", required=True, help="需要扫描的目录或文件")
     scan_parser.add_argument("--server", default="http://127.0.0.1:8080", help="服务端地址；扫描前会先尝试同步")
+    scan_parser.add_argument("--token", default=None, help="API Token；未提供时读取 SERVER_API_TOKEN")
     scan_parser.add_argument("--no-sync", action="store_true", help="扫描前不自动同步规则")
     scan_parser.add_argument("--json", action="store_true", help="以 JSON 输出扫描结果")
     scan_parser.add_argument("--report", action="store_true", help="扫描完成后将结果上报服务端")
@@ -43,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def report_scan_results(server_url: str, results: list[dict], scan_path: str, host_id: str) -> dict:
+def report_scan_results(server_url: str, results: list[dict], scan_path: str, host_id: str, token: str | None = None) -> dict:
     payload = {
         "host_id": host_id,
         "scan_path": scan_path,
@@ -52,7 +54,7 @@ def report_scan_results(server_url: str, results: list[dict], scan_path: str, ho
     }
     url = f"{server_url.rstrip('/')}/api/client/scan-results"
     try:
-        resp = requests.post(url, json=payload, timeout=30)
+        resp = requests.post(url, json=payload, headers=auth_headers(token), timeout=30)
         resp.raise_for_status()
         data = resp.json()
         logger.info(f"扫描结果上报成功: {data}")
@@ -91,14 +93,14 @@ def main():
 
     try:
         if args.command == "sync":
-            result = sync_rules(args.server.rstrip("/"), db)
+            result = sync_rules(args.server.rstrip("/"), db, token=args.token)
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "scan":
             target = Path(args.path)
             if not target.exists():
                 raise FileNotFoundError(f"扫描路径不存在: {args.path}")
             if not args.no_sync:
-                sync_rules(args.server.rstrip("/"), db)
+                sync_rules(args.server.rstrip("/"), db, token=args.token)
             results = scan_directory(args.path, db)
             if args.json:
                 dump_results(results)
@@ -114,7 +116,7 @@ def main():
                     if label:
                         print(f"{label} {r['file_path']} score={r['match_score']} risk={r['risk_level']} type={r.get('sensitive_type')}")
             if args.report:
-                report = report_scan_results(args.server.rstrip("/"), results, args.path, args.host_id)
+                report = report_scan_results(args.server.rstrip("/"), results, args.path, args.host_id, token=args.token)
                 print(json.dumps(report, ensure_ascii=False, indent=2))
         elif args.command == "list":
             rows = db.list_tags(args.sensitive_only)

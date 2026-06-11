@@ -1,5 +1,7 @@
 """客户端规则同步模块"""
 
+import os
+
 import requests
 from loguru import logger
 
@@ -9,14 +11,21 @@ except ImportError:
     from client.local_db import LocalDB
 
 
-def sync_rules(server_url: str, db: LocalDB) -> dict:
+def auth_headers(token: str | None = None) -> dict:
+    token = (token or os.getenv("SERVER_API_TOKEN") or "").strip()
+    if not token or token == "change-me":
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def sync_rules(server_url: str, db: LocalDB, token: str | None = None) -> dict:
     """从服务端同步规则到本地 SQLite"""
     local_version = db.get_local_version()
     url = f"{server_url}/api/client/rules?version={local_version}"
     logger.info(f"同步规则: 本地版本={local_version}, 请求={url}")
 
     try:
-        resp = requests.get(url, timeout=30)
+        resp = requests.get(url, headers=auth_headers(token), timeout=30)
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as e:
