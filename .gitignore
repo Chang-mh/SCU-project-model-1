@@ -29,3 +29,11 @@ Thumbs.db
 
 # Misc
 *.bak
+
+# Review documents (not for remote)
+MODULE_ONE_IMPLEMENTATION_REVIEW.md
+MODULE_ONE_PLAN_COMPLIANCE_REVIEW.md
+
+# Review documents (not for upload)
+MODULE_ONE_IMPLEMENTATION_REVIEW.md
+MODULE_ONE_PLAN_COMPLIANCE_REVIEW.md
