@@ -4,6 +4,11 @@ import re
 import hashlib
 from typing import Optional
 
+try:
+    import jieba
+except Exception:
+    jieba = None
+
 
 def compute_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -108,7 +113,7 @@ def match_keyword(text: str, rules: list) -> list:
         min_hits = content.get("min_hits", 1)
         if not keywords:
             continue
-        matched = [kw for kw in keywords if kw in text]
+        matched = _match_keywords(text, keywords)
         if len(matched) >= min_hits:
             hits.append({
                 "rule_id": rule.get("rule_id"),
@@ -117,6 +122,15 @@ def match_keyword(text: str, rules: list) -> list:
                 "risk_level": rule.get("risk_level", "medium"),
             })
     return hits
+
+
+def _match_keywords(text: str, keywords: list) -> list:
+    matched = []
+    token_set = set(jieba.cut(text)) if jieba is not None else set()
+    for kw in keywords:
+        if kw in text or kw in token_set:
+            matched.append(kw)
+    return matched
 
 
 def match_combined(text: str, rules: list) -> list:
@@ -137,7 +151,7 @@ def match_combined(text: str, rules: list) -> list:
             if cond_type == "keyword":
                 kw_values = cond.get("value", [])
                 min_h = cond.get("min_hits", 1)
-                matched_kw = [kw for kw in kw_values if kw in text]
+                matched_kw = _match_keywords(text, kw_values)
                 cond_results.append(len(matched_kw) >= min_h)
             elif cond_type == "regex":
                 pattern = cond.get("value", "")

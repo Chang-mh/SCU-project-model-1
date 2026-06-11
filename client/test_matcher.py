@@ -52,6 +52,21 @@ class MatcherTest(unittest.TestCase):
         self.assertEqual(len(hits), 1)
         self.assertEqual(hits[0]["keywords_matched"], ["客户名称", "报价"])
 
+    def test_match_keyword_uses_jieba_tokens_with_substring_fallback(self):
+        rules = [
+            {
+                "rule_id": "token_keyword",
+                "rule_type": "keyword",
+                "risk_level": "medium",
+                "content": {"keywords": ["报价", "客户名称"], "min_hits": 1},
+            }
+        ]
+
+        hits = match_keyword("客户名称：四川示例科技有限公司", rules)
+
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["keywords_matched"], ["客户名称"])
+
     def test_compute_score_sums_hits_and_caps_at_100(self):
         regex_hits = [{"risk_level": "high"}, {"risk_level": "medium"}]
         keyword_hits = [{"rule_id": "keyword"}]
