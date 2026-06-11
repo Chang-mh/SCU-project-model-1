@@ -2,7 +2,9 @@
 
 import json
 import os
-from pathlib import Path
+import tempfile
+import zipfile
+from pathlib import Path, PurePosixPath
 from typing import Iterable, Optional
 
 import chardet
@@ -59,9 +61,13 @@ TEXT_SUFFIXES = {
     ".conf", ".config", ".ini", ".yaml", ".yml", ".log", ".properties",
 }
 OFFICE_SUFFIXES = {".docx", ".xlsx", ".pdf"}
+ARCHIVE_SUFFIXES = {".zip"}
 SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "target", "out", ".mypy_cache", ".pytest_cache", ".idea", ".vscode"}
 DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024
 MAX_FILE_SIZE = int(os.getenv("SCANNER_MAX_FILE_SIZE", DEFAULT_MAX_FILE_SIZE))
+MAX_ZIP_DEPTH = int(os.getenv("SCANNER_MAX_ZIP_DEPTH", "2"))
+MAX_ZIP_ENTRIES = int(os.getenv("SCANNER_MAX_ZIP_ENTRIES", "200"))
+MAX_ZIP_TOTAL_SIZE = int(os.getenv("SCANNER_MAX_ZIP_TOTAL_SIZE", str(100 * 1024 * 1024)))
 
 
 class ScanResult:
@@ -105,6 +111,26 @@ def scan_directory(path: str, db: LocalDB) -> list[dict]:
     results = []
     for file_path in iter_files(root):
         try:
+            if file_path.suffix.lower() in ARCHIVE_SUFFIXES:
+                zip_results = scan_zip_file(file_path, rules, fingerprints, semantic_labels, simhash_threshold=simhash_threshold)
+                for result in zip_results:
+                    db.upsert_file_tag(
+                        file_path=result.file_path,
+                        file_hash=result.file_hash,
+                        sensitive=result.sensitive,
+                        sensitive_type=result.sensitive_type,
+                        risk_level=result.risk_level,
+                        sensitive_file_id=result.sensitive_file_id,
+                        match_score=result.match_score,
+                        confidence_level=result.confidence_level,
+                        match_detail=result.match_detail,
+                    )
+                    results.append(result.to_dict())
+                    if result.confidence_level != "clean":
+                        logger.warning(f"发现命中文件: {result.file_path}, confidence={result.confidence_level}, score={result.match_score}, risk={result.risk_level}")
+                    else:
+                        logger.info(f"扫描完成: {result.file_path}, score={result.match_score}")
+                continue
             result = scan_file(file_path, rules, fingerprints, semantic_labels, simhash_threshold=simhash_threshold)
             db.upsert_file_tag(
                 file_path=result.file_path,
@@ -143,8 +169,77 @@ def iter_files(root: Path) -> Iterable[Path]:
         yield file_path
 
 
-def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, simhash_threshold: int = 3) -> ScanResult:
-    data = file_path.read_bytes()
+def is_safe_zip_member(name: str) -> bool:
+    normalized = name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    return not path.is_absolute() and ".." not in path.parts
+
+
+def scan_zip_file(zip_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, simhash_threshold: int = 3, depth: int = 0) -> list[ScanResult]:
+    if depth >= MAX_ZIP_DEPTH:
+        logger.warning(f"跳过超过递归层级限制的 ZIP: {zip_path}")
+        return []
+
+    results = []
+    total_size = 0
+    scanned_entries = 0
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                if scanned_entries >= MAX_ZIP_ENTRIES:
+                    logger.warning(f"ZIP 条目数超过限制，停止扫描: {zip_path}")
+                    break
+                if not is_safe_zip_member(info.filename):
+                    logger.warning(f"跳过存在 Zip Slip 风险的条目: {zip_path}!{info.filename}")
+                    continue
+                if info.file_size > MAX_FILE_SIZE:
+                    logger.warning(f"跳过 ZIP 内过大文件: {zip_path}!{info.filename}")
+                    continue
+                total_size += info.file_size
+                if total_size > MAX_ZIP_TOTAL_SIZE:
+                    logger.warning(f"ZIP 解压总量超过限制，停止扫描: {zip_path}")
+                    break
+
+                scanned_entries += 1
+                member_name = PurePosixPath(info.filename).name or "member"
+                virtual_path = f"{zip_path}!{info.filename}"
+                with archive.open(info) as member:
+                    data = member.read(MAX_FILE_SIZE + 1)
+                if len(data) > MAX_FILE_SIZE:
+                    logger.warning(f"跳过 ZIP 内过大文件: {virtual_path}")
+                    continue
+                if member_name.lower().endswith(".zip"):
+                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                        tmp.write(data)
+                        nested_path = Path(tmp.name)
+                    try:
+                        for result in scan_zip_file(nested_path, rules, fingerprints, semantic_labels, simhash_threshold, depth + 1):
+                            result.file_path = f"{virtual_path}!{result.file_path.split('!', 1)[-1]}"
+                            results.append(result)
+                    finally:
+                        nested_path.unlink(missing_ok=True)
+                    continue
+
+                suffix = PurePosixPath(member_name).suffix.lower()
+                source_path = None
+                if suffix in OFFICE_SUFFIXES:
+                    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                        tmp.write(data)
+                        source_path = Path(tmp.name)
+                try:
+                    result = scan_bytes(virtual_path, member_name, data, rules, fingerprints, semantic_labels, simhash_threshold=simhash_threshold, source_path=source_path)
+                    results.append(result)
+                finally:
+                    if source_path is not None:
+                        source_path.unlink(missing_ok=True)
+    except zipfile.BadZipFile as exc:
+        logger.warning(f"ZIP 解析失败: {zip_path}, reason={exc}")
+    return results
+
+
+def scan_bytes(display_path: str, file_name: str, data: bytes, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, simhash_threshold: int = 3, source_path: Optional[Path] = None) -> ScanResult:
     sha256 = compute_sha256(data)
 
     sha_hit = match_sha256(sha256, fingerprints)
@@ -161,17 +256,18 @@ def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels:
             "semantic_labels": label_detail.get("semantic_labels", []),
             "embedding_id": label_detail.get("embedding_id"),
         }
-        return ScanResult(str(file_path), sha256, True, "样本指纹命中", "high", sha_hit.get("sensitive_file_id"), 100, "sensitive", detail)
+        return ScanResult(display_path, sha256, True, "样本指纹命中", "high", sha_hit.get("sensitive_file_id"), 100, "sensitive", detail)
 
     text = ""
     extract_error = None
     skip_reason = None
+    scan_path = source_path or Path(file_name)
     try:
-        text = extract_text(file_path, data)
+        text = extract_text_from_bytes(scan_path, data, source_path=source_path)
     except Exception as exc:
         extract_error = str(exc)
-        logger.warning(f"文本提取失败: {file_path}, reason={extract_error}")
-    if not text and file_path.suffix.lower() == ".pdf":
+        logger.warning(f"文本提取失败: {display_path}, reason={extract_error}")
+    if not text and scan_path.suffix.lower() == ".pdf":
         skip_reason = "pdf_text_empty" if PdfReader is not None else "pdf_reader_missing"
 
     simhash = compute_simhash(text) if text else ""
@@ -207,19 +303,29 @@ def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels:
         detail["extract_error"] = extract_error
     if skip_reason:
         detail["skip_reason"] = skip_reason
-    return ScanResult(str(file_path), sha256, sensitive, sensitive_type, risk_level, sensitive_file_id, score, confidence_level, detail)
+    return ScanResult(display_path, sha256, sensitive, sensitive_type, risk_level, sensitive_file_id, score, confidence_level, detail)
+
+
+def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, simhash_threshold: int = 3) -> ScanResult:
+    data = file_path.read_bytes()
+    return scan_bytes(str(file_path), file_path.name, data, rules, fingerprints, semantic_labels, simhash_threshold=simhash_threshold, source_path=file_path)
 
 
 def extract_text(file_path: Path, data: bytes) -> str:
+    return extract_text_from_bytes(file_path, data, source_path=file_path)
+
+
+def extract_text_from_bytes(file_path: Path, data: bytes, source_path: Optional[Path] = None) -> str:
     suffix = file_path.suffix.lower()
+    path_for_parser = source_path or file_path
     if suffix in TEXT_SUFFIXES:
         return read_text_with_detection(data)
     if suffix == ".docx":
-        return extract_docx(file_path)
+        return extract_docx(path_for_parser)
     if suffix == ".xlsx":
-        return extract_xlsx(file_path)
+        return extract_xlsx(path_for_parser)
     if suffix == ".pdf":
-        return extract_pdf(file_path)
+        return extract_pdf(path_for_parser)
     return read_text_with_detection(data)
 
 

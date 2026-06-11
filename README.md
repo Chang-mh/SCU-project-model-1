@@ -146,4 +146,4 @@ python client.py list --sensitive-only --json
 python -m unittest discover -p "test_*.py" -v
 ```
 
-扫描结果保存在客户端本地 `sensitive_tags.db`, 不会修改被扫描文件.
+扫描结果保存在客户端本地 `sensitive_tags.db`, 不会修改被扫描文件. 客户端会递归扫描 `.zip` 压缩包内的普通文件，并通过 `SCANNER_MAX_ZIP_DEPTH`、`SCANNER_MAX_ZIP_ENTRIES`、`SCANNER_MAX_ZIP_TOTAL_SIZE` 限制递归层级、条目数和解压总量，同时跳过存在 Zip Slip 风险的条目。
