@@ -199,7 +199,7 @@ func parseLLMResponse(content, sensitiveType, riskLevel string) (SemanticResult,
 		SensitiveType:  resp.SensitiveType,
 		RiskLevel:      resp.RiskLevel,
 		EmbeddingID:    "",
-		ModelName:      os.Getenv(EnvArkEndpointID),
+		ModelName:      getEnvWithFallback(EnvArkChatModel, EnvArkEndpointID),
 		Explanation:    resp.Explanation,
 	}, nil
 }
