@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
 
 func TestGenerateRulesDetectsBuiltinRegexRules(t *testing.T) {
 	text := "联系人手机号13800138000，邮箱 test@example.com，api_key = abcdefghijklmnop"
@@ -8,6 +11,29 @@ func TestGenerateRulesDetectsBuiltinRegexRules(t *testing.T) {
 	rules := GenerateRules(text, "客户资料", "medium", "")
 
 	for _, name := range []string{"mobile_phone", "email", "api_key"} {
+		if !hasRule(rules, "regex", name) {
+			t.Fatalf("GenerateRules() missing regex rule %q in %#v", name, rules)
+		}
+	}
+}
+
+func TestBuiltinRegexRulesArePythonCompatible(t *testing.T) {
+	for _, rule := range BuiltinRegexRules {
+		if _, err := regexp.Compile(rule.Pattern); err != nil {
+			t.Fatalf("builtin regex %q is invalid in Go: %v", rule.Name, err)
+		}
+		if containsAnyValue([]string{rule.Pattern}, `\p{Han}`) {
+			t.Fatalf("builtin regex %q uses \\p{Han}, which Python re cannot compile", rule.Name)
+		}
+	}
+}
+
+func TestGenerateRulesDetectsChinesePlateAndAddress(t *testing.T) {
+	text := "车辆川A12345停放在四川省成都市高新区天府大道88号，联系人李四"
+
+	rules := GenerateRules(text, "车辆地址资料", "medium", "")
+
+	for _, name := range []string{"license_plate", "address"} {
 		if !hasRule(rules, "regex", name) {
 			t.Fatalf("GenerateRules() missing regex rule %q in %#v", name, rules)
 		}
