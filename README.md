@@ -26,16 +26,23 @@ CREATE DATABASE sensitive_agent DEFAULT CHARACTER SET utf8mb4;
 
 ### 2. 配置 .env
 
-复制项目根目录的 `.env` 文件, 填入真实密钥:
+复制项目根目录的 `.env.example` 为 `.env`, 填入真实密钥和模型接入点:
 
 ```bash
-# 火山引擎方舟
+# 火山引擎方舟 / OpenAI-compatible
 ARK_API_KEY=你的真实APIKey
-ARK_ENDPOINT_ID=ep-你的真实EndpointID
+ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+ARK_CHAT_MODEL=ep-你的ChatModel接入点ID
+ARK_EMBEDDING_MODEL=ep-你的Embedding接入点ID
+
+# PaddleOCR PDF 解析；未配置时 PDF 会降级为启发式文本提取
+PADDLEOCR_API_URL=你的PaddleOCR HTTP接口地址
+PADDLEOCR_API_KEY=你的PaddleOCR APIKey
 ```
 
 > `.env` 已在 `.gitignore` 中, 不会提交到仓库.
 > 服务启动时会自动从当前目录向上查找并加载 `.env` 文件.
+> `ARK_ENDPOINT_ID` 仍作为旧版 ChatModel 配置兼容项保留，推荐新配置使用 `ARK_CHAT_MODEL`.
 
 ### 3. 启动服务
 
@@ -50,13 +57,17 @@ go run .
 
 | 环境变量 | 说明 | 默认值 |
 |---|---|---|
-| `ARK_API_KEY` | 方舟 API Key (**必填**) | 无 |
-| `ARK_BASE_URL` | 方舟 API 端点 | `https://ark.cn-beijing.volces.com/api/v3` |
-| `ARK_ENDPOINT_ID` | 推理接入点 ID (**必填**) | 无 |
+| `ARK_API_KEY` | 方舟 API Key，ChatModel/Embedding 共用 | 无 |
+| `ARK_BASE_URL` | 方舟 OpenAI-compatible API 端点 | `https://ark.cn-beijing.volces.com/api/v3` |
+| `ARK_CHAT_MODEL` | ChatModel 接入点/模型 ID | 无 |
+| `ARK_EMBEDDING_MODEL` | Embedding 接入点/模型 ID；未配置时不生成向量，不影响上传 | 无 |
+| `ARK_ENDPOINT_ID` | 旧版 ChatModel 配置兼容项，未设置 `ARK_CHAT_MODEL` 时使用 | 无 |
+| `PADDLEOCR_API_URL` | PaddleOCR PDF 解析 HTTP 接口；占位为 `xxx` 时自动降级 | `xxx` |
+| `PADDLEOCR_API_KEY` | PaddleOCR API Key；占位为 `xxx` 时不发送 Authorization | `xxx` |
 
-**Endpoint ID 是什么?** 在方舟控制台部署模型(如 Doubao-pro)后, 系统会生成一个推理接入点, 其唯一标识就是 Endpoint ID(格式 `ep-202406xxxxx-xxxxx`). 调用 API 时将它作为 `model` 参数传入.
+**接入点 ID 是什么?** 在方舟控制台部署模型后, 系统会生成一个接入点/模型 ID。调用 API 时将它作为 `model` 参数传入。Chat 与 Embedding 请分别填入 `ARK_CHAT_MODEL` 和 `ARK_EMBEDDING_MODEL`。
 
-未配置方舟时, 语义识别自动降级为关键词规则推理, 不影响基本功能.
+未配置方舟时, 语义识别自动降级为关键词规则推理, 不影响基本功能。未配置 PaddleOCR 时，PDF 会降级为启发式文本提取。
 
 ### API 接口
 
