@@ -213,6 +213,7 @@ func persistPreparedUpload(tx *gorm.DB, item preparedUpload, version int) error 
 
 	fp := model.FileFingerprint{
 		SampleID:   item.FileID,
+		Version:    version,
 		SHA256:     item.SHA256,
 		SimHash:    item.SimHash,
 		TextLength: len(item.Text),
@@ -323,7 +324,11 @@ func SyncRules(ctx *app.RequestContext) {
 	}
 
 	var fingerprints []model.FileFingerprint
-	dal.DB.Find(&fingerprints)
+	if clientVersion == 0 {
+		dal.DB.Find(&fingerprints)
+	} else {
+		dal.DB.Where("version > ?", clientVersion).Find(&fingerprints)
+	}
 
 	var semanticFeatures []model.SemanticFeature
 	dal.DB.Find(&semanticFeatures)
@@ -710,7 +715,11 @@ func getRuleSet(clientVersion int) RuleSyncResponse {
 		return RuleSyncResponse{LatestVersion: latest.Version}
 	}
 	var fingerprints []model.FileFingerprint
-	dal.DB.Find(&fingerprints)
+	if clientVersion == 0 {
+		dal.DB.Find(&fingerprints)
+	} else {
+		dal.DB.Where("version > ?", clientVersion).Find(&fingerprints)
+	}
 
 	var semanticFeatures []model.SemanticFeature
 	dal.DB.Find(&semanticFeatures)

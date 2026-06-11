@@ -4,6 +4,7 @@ import "time"
 
 type FileFingerprint struct {
 	SampleID   string `gorm:"primaryKey;size:64" json:"sensitive_file_id"`
+	Version    int    `gorm:"index" json:"version"`
 	SHA256     string `gorm:"size:64;index" json:"sha256"`
 	SimHash    string `gorm:"size:32" json:"simhash"`
 	TextLength int    `json:"text_length"`
