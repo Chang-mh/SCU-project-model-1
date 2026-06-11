@@ -87,22 +87,25 @@ func buildSemanticResps(features []model.SemanticFeature) []SemanticResp {
 	return resps
 }
 
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		zap.L().Warn("生成随机ID失败，使用时间戳降级", zap.Error(err))
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
 func genFileID() string {
-	b := make([]byte, 8)
-	rand.Read(b)
-	return "file_" + hex.EncodeToString(b)
+	return "file_" + randomHex(16)
 }
 
 func genRuleID() string {
-	b := make([]byte, 4)
-	rand.Read(b)
-	return "rule_" + hex.EncodeToString(b)
+	return "rule_" + randomHex(12)
 }
 
 func genSemanticID() string {
-	b := make([]byte, 4)
-	rand.Read(b)
-	return "sem_" + hex.EncodeToString(b)
+	return "sem_" + randomHex(12)
 }
 
 type preparedUpload struct {

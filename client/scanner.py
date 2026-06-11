@@ -1,6 +1,7 @@
 """客户端目录扫描模块"""
 
 import json
+import os
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -56,8 +57,9 @@ TEXT_SUFFIXES = {
     ".conf", ".config", ".ini", ".yaml", ".yml", ".log", ".properties",
 }
 OFFICE_SUFFIXES = {".docx", ".xlsx", ".pdf"}
-SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
-MAX_FILE_SIZE = 50 * 1024 * 1024
+SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "target", "out", ".mypy_cache", ".pytest_cache", ".idea", ".vscode"}
+DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024
+MAX_FILE_SIZE = int(os.getenv("SCANNER_MAX_FILE_SIZE", DEFAULT_MAX_FILE_SIZE))
 
 
 class ScanResult:

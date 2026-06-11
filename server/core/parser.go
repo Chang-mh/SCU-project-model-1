@@ -27,6 +27,11 @@ const (
 	DefaultPaddleOCRAPIKey = "xxx"
 )
 
+var (
+	cleanSpaceRE     = regexp.MustCompile(`\s+`)
+	pdfVisibleTextRE = regexp.MustCompile(`[\x20-\x7e\p{Han}]{3,}`)
+)
+
 func ExtractText(fileName string, data []byte) (string, string, error) {
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(fileName), "."))
 	switch ext {
@@ -67,8 +72,7 @@ func bytesToText(data []byte) string {
 
 func cleanText(text string) string {
 	text = strings.ReplaceAll(text, "\x00", " ")
-	space := regexp.MustCompile(`\s+`)
-	return strings.TrimSpace(space.ReplaceAllString(text, " "))
+	return strings.TrimSpace(cleanSpaceRE.ReplaceAllString(text, " "))
 }
 
 func extractXLSX(data []byte) (string, error) {
@@ -241,6 +245,5 @@ func extractTextFromOCRValue(value any) string {
 
 func extractPDFLikeText(data []byte) string {
 	text := bytesToText(data)
-	re := regexp.MustCompile(`[\x20-\x7e\p{Han}]{3,}`)
-	return strings.Join(re.FindAllString(text, -1), " ")
+	return strings.Join(pdfVisibleTextRE.FindAllString(text, -1), " ")
 }
