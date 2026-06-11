@@ -130,7 +130,7 @@ func analyzeWithLLM(text, sensitiveType, riskLevel string) (SemanticResult, erro
 		truncated = string([]rune(truncated)[:MaxTextForLLM])
 	}
 
-	prompt := fmt.Sprintf(semanticPromptTemplate, sensitiveType, riskLevel, truncated)
+	prompt := buildSemanticPrompt(sensitiveType, riskLevel, truncated)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -144,6 +144,12 @@ func analyzeWithLLM(text, sensitiveType, riskLevel string) (SemanticResult, erro
 	}
 
 	return parseLLMResponse(msg.Content, sensitiveType, riskLevel)
+}
+
+func buildSemanticPrompt(sensitiveType, riskLevel, text string) string {
+	prompt := strings.Replace(semanticPromptTemplate, "%s", sensitiveType, 1)
+	prompt = strings.Replace(prompt, "%s", riskLevel, 1)
+	return strings.Replace(prompt, "%s", text, 1)
 }
 
 func parseLLMResponse(content, sensitiveType, riskLevel string) (SemanticResult, error) {
