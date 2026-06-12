@@ -568,13 +568,29 @@ func QuerySensitiveFile(_ context.Context, ctx *app.RequestContext) {
 		return
 	}
 
+	fileHash := strings.TrimSpace(query.FileHash)
+	fileName := strings.TrimSpace(query.FileName)
+	filePath := strings.TrimSpace(query.FilePath)
+	matchType := "sha256"
+	if fileHash == "" {
+		if fileName != "" {
+			matchType = "filename_like"
+		} else if filePath != "" {
+			fileName = filepath.Base(filePath)
+			matchType = "filepath_basename_like"
+		}
+	}
+	if fileHash == "" && fileName == "" {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "至少需要提供 file_hash 或 file_name"})
+		return
+	}
+
 	var sample model.SensitiveSample
 	dbQuery := dal.DB
-	if query.FileHash != "" {
-		dbQuery = dbQuery.Where("sha256 = ?", query.FileHash)
-	}
-	if query.FileName != "" {
-		dbQuery = dbQuery.Where("file_name LIKE ?", "%"+query.FileName+"%")
+	if fileHash != "" {
+		dbQuery = dbQuery.Where("sha256 = ?", fileHash)
+	} else {
+		dbQuery = dbQuery.Where("file_name LIKE ?", "%"+fileName+"%")
 	}
 
 	if err := dbQuery.First(&sample).Error; err != nil {
@@ -588,6 +604,7 @@ func QuerySensitiveFile(_ context.Context, ctx *app.RequestContext) {
 
 	ctx.JSON(consts.StatusOK, map[string]any{
 		"sensitive":         true,
+		"match_type":        matchType,
 		"sensitive_file_id": sample.ID,
 		"file_name":         sample.FileName,
 		"sensitive_type":    sample.SensitiveType,
