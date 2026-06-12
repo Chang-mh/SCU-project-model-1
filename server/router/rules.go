@@ -1058,22 +1058,118 @@ func ReportScanResults(_ context.Context, ctx *app.RequestContext) {
 		return
 	}
 
+	reportID := "scan_" + randomHex(16)
+	createdAt := time.Now()
 	confidenceCounts := map[string]int{}
-	for _, result := range report.Results {
-		confidence := result.ConfidenceLevel
-		if confidence == "" {
-			confidence = "unknown"
+	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
+		scanReport := model.ClientScanReport{
+			ID:          reportID,
+			HostID:      strings.TrimSpace(report.HostID),
+			ScanPath:    report.ScanPath,
+			ScannedAt:   report.ScannedAt,
+			ResultCount: len(report.Results),
+			CreatedAt:   createdAt,
 		}
-		confidenceCounts[confidence]++
+		if err := tx.Create(&scanReport).Error; err != nil {
+			return err
+		}
+		rows := make([]model.ClientScanResult, 0, len(report.Results))
+		for _, result := range report.Results {
+			confidence := strings.TrimSpace(result.ConfidenceLevel)
+			if confidence == "" {
+				confidence = "unknown"
+			}
+			confidenceCounts[confidence]++
+			matchDetail := "{}"
+			if result.MatchDetail != nil {
+				data, err := json.Marshal(result.MatchDetail)
+				if err != nil {
+					return fmt.Errorf("序列化扫描结果详情失败: %w", err)
+				}
+				matchDetail = string(data)
+			}
+			rows = append(rows, model.ClientScanResult{
+				ReportID:        reportID,
+				FilePath:        result.FilePath,
+				FileHash:        result.FileHash,
+				Sensitive:       result.Sensitive,
+				SensitiveType:   result.SensitiveType,
+				RiskLevel:       result.RiskLevel,
+				SensitiveFileID: result.SensitiveFileID,
+				MatchScore:      result.MatchScore,
+				ConfidenceLevel: confidence,
+				MatchDetail:     matchDetail,
+				CreatedAt:       createdAt,
+			})
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		return tx.CreateInBatches(rows, 500).Error
+	}); err != nil {
+		zap.L().Error("保存客户端扫描结果失败", zap.String("host_id", report.HostID), zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "保存扫描结果失败"})
+		return
 	}
+
 	zap.L().Info("收到客户端扫描结果上报",
+		zap.String("report_id", reportID),
 		zap.String("host_id", report.HostID),
 		zap.String("scan_path", report.ScanPath),
 		zap.String("scanned_at", report.ScannedAt),
 		zap.Int("result_count", len(report.Results)),
 		zap.Any("confidence_counts", confidenceCounts),
 	)
-	ctx.JSON(consts.StatusOK, map[string]any{"status": "received", "received": len(report.Results)})
+	ctx.JSON(consts.StatusOK, map[string]any{"status": "received", "report_id": reportID, "received": len(report.Results)})
+}
+
+func ListScanResults(_ context.Context, ctx *app.RequestContext) {
+	hostID := strings.TrimSpace(ctx.Query("host_id"))
+	sensitiveOnly := strings.EqualFold(ctx.Query("sensitive_only"), "true") || ctx.Query("sensitive_only") == "1"
+	confidenceMin := strings.TrimSpace(ctx.Query("confidence_min"))
+	limit := 200
+	if rawLimit := strings.TrimSpace(ctx.Query("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err == nil && parsed > 0 && parsed <= 1000 {
+			limit = parsed
+		}
+	}
+
+	query := dal.DB.Model(&model.ClientScanResult{})
+	if hostID != "" {
+		query = query.Joins("JOIN client_scan_reports ON client_scan_reports.id = client_scan_results.report_id").
+			Where("client_scan_reports.host_id = ?", hostID)
+	}
+	if sensitiveOnly {
+		query = query.Where("client_scan_results.sensitive = ?", true)
+	}
+	if confidenceMin != "" {
+		levels := confidenceFilter(confidenceMin)
+		if len(levels) == 0 {
+			ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "confidence_min 无效"})
+			return
+		}
+		query = query.Where("client_scan_results.confidence_level IN ?", levels)
+	}
+
+	var results []model.ClientScanResult
+	if err := query.Order("client_scan_results.created_at desc").Limit(limit).Find(&results).Error; err != nil {
+		zap.L().Error("查询客户端扫描结果失败", zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询扫描结果失败"})
+		return
+	}
+	ctx.JSON(consts.StatusOK, map[string]any{"total": len(results), "results": results})
+}
+
+func confidenceFilter(minLevel string) []string {
+	order := []string{"clean", "low_confidence", "suspected", "sensitive"}
+	minLevel = strings.ToLower(strings.TrimSpace(minLevel))
+	for i, level := range order {
+		if level == minLevel {
+			return order[i:]
+		}
+	}
+	return nil
 }
 
 type RuleSyncQuery struct {

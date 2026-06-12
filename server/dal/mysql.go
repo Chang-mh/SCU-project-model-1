@@ -26,6 +26,8 @@ func InitDB(dsn string) error {
 		&model.FileFingerprint{},
 		&model.SemanticFeature{},
 		&model.RuleVersion{},
+		&model.ClientScanReport{},
+		&model.ClientScanResult{},
 	)
 	if err != nil {
 		return err

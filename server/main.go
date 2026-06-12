@@ -80,6 +80,8 @@ func main() {
 	h.POST("/api/client/rules/batch", router.BatchSyncRules)
 	h.POST("/api/client/scan-results", router.ReportScanResults)
 
+	h.GET("/api/server/scan-results", router.ListScanResults)
+
 	go waitForShutdown(h, logger)
 
 	zap.L().Info("敏感文件识别服务启动", zap.String("addr", addr), zap.Int("max_request_body_size", maxRequestBodySize))
