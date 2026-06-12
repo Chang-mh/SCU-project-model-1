@@ -60,6 +60,7 @@ type RuleResp struct {
 	RuleType      string         `json:"rule_type"`
 	SensitiveType string         `json:"sensitive_type"`
 	RiskLevel     string         `json:"risk_level"`
+	Source        string         `json:"source"`
 	Content       map[string]any `json:"content"`
 }
 
@@ -344,7 +345,10 @@ func persistPreparedUpload(tx *gorm.DB, item preparedUpload, version int) error 
 			SensitiveType: rule.SensitiveType,
 			RiskLevel:     rule.RiskLevel,
 			Content:       core.RuleContentJSON(rule.Content),
+			Source:        "sample",
+			Enabled:       true,
 			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
 		}
 		if err := tx.Create(&r).Error; err != nil {
 			return fmt.Errorf("保存规则失败: %w", err)
@@ -441,16 +445,20 @@ func UploadSample(_ context.Context, ctx *app.RequestContext) {
 }
 
 func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
+	latestVersion := 0
 	var latest model.RuleVersion
 	if err := dal.DB.Order("version desc").First(&latest).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return RuleSyncResponse{LatestVersion: 0, FullSync: clientVersion == 0, Config: syncConfig()}, nil
+		if err != gorm.ErrRecordNotFound {
+			return RuleSyncResponse{}, fmt.Errorf("查询最新规则版本失败: %w", err)
 		}
-		return RuleSyncResponse{}, fmt.Errorf("查询最新规则版本失败: %w", err)
+	} else {
+		latestVersion = latest.Version
 	}
 
 	var rules []model.GeneratedRule
-	if err := dal.DB.Where("version > ?", clientVersion).Find(&rules).Error; err != nil {
+	ruleQuery := dal.DB.Where("enabled = ? AND deleted_at IS NULL", true).
+		Where("source = ? OR version > ?", core.BuiltinRuleSource, clientVersion)
+	if err := ruleQuery.Find(&rules).Error; err != nil {
 		return RuleSyncResponse{}, fmt.Errorf("查询规则失败: %w", err)
 	}
 
@@ -483,6 +491,7 @@ func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
 			RuleType:      r.RuleType,
 			SensitiveType: r.SensitiveType,
 			RiskLevel:     r.RiskLevel,
+			Source:        r.Source,
 			Content:       content,
 		})
 	}
@@ -497,7 +506,7 @@ func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
 	}
 
 	return RuleSyncResponse{
-		LatestVersion:  latest.Version,
+		LatestVersion:  latestVersion,
 		FullSync:       clientVersion == 0,
 		Rules:          ruleResps,
 		Fingerprints:   fingerResps,

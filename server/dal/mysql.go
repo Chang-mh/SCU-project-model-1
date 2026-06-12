@@ -1,6 +1,7 @@
 package dal
 
 import (
+	"scu-project-model-1/server/core"
 	"scu-project-model-1/server/model"
 
 	"go.uber.org/zap"
@@ -27,6 +28,9 @@ func InitDB(dsn string) error {
 		&model.RuleVersion{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := core.SeedBuiltinRules(DB); err != nil {
 		return err
 	}
 	zap.L().Info("Database migrated successfully")
