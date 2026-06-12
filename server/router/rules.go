@@ -46,6 +46,7 @@ type RuleSyncResponse struct {
 	LatestVersion  int            `json:"latest_version"`
 	FullSync       bool           `json:"full_sync"`
 	Rules          []RuleResp     `json:"rules"`
+	DeletedRuleIDs []string       `json:"deleted_rule_ids"`
 	Fingerprints   []FingerResp   `json:"fingerprints"`
 	SemanticLabels []SemanticResp `json:"semantic_labels"`
 	Config         SyncConfig     `json:"config"`
@@ -456,8 +457,7 @@ func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
 	}
 
 	var rules []model.GeneratedRule
-	ruleQuery := dal.DB.Where("enabled = ? AND deleted_at IS NULL", true).
-		Where("source = ? OR version > ?", core.BuiltinRuleSource, clientVersion)
+	ruleQuery := dal.DB.Where("source = ? OR version > ?", core.BuiltinRuleSource, clientVersion)
 	if err := ruleQuery.Find(&rules).Error; err != nil {
 		return RuleSyncResponse{}, fmt.Errorf("查询规则失败: %w", err)
 	}
@@ -481,7 +481,14 @@ func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
 	}
 
 	ruleResps := make([]RuleResp, 0, len(rules))
+	deletedRuleIDs := make([]string, 0)
 	for _, r := range rules {
+		if !r.Enabled || r.DeletedAt != nil {
+			if r.Version > clientVersion {
+				deletedRuleIDs = append(deletedRuleIDs, r.ID)
+			}
+			continue
+		}
 		content := map[string]any{}
 		if err := json.Unmarshal([]byte(r.Content), &content); err != nil {
 			zap.L().Warn("解析规则内容失败", zap.String("rule_id", r.ID), zap.Error(err))
@@ -509,6 +516,7 @@ func buildRuleSyncResponse(clientVersion int) (RuleSyncResponse, error) {
 		LatestVersion:  latestVersion,
 		FullSync:       clientVersion == 0,
 		Rules:          ruleResps,
+		DeletedRuleIDs: deletedRuleIDs,
 		Fingerprints:   fingerResps,
 		SemanticLabels: buildSemanticResps(semanticFeatures),
 		Config:         syncConfig(),
@@ -532,6 +540,116 @@ func SyncRules(_ context.Context, ctx *app.RequestContext) {
 		return
 	}
 	ctx.JSON(consts.StatusOK, resp)
+}
+
+func UpdateRule(_ context.Context, ctx *app.RequestContext) {
+	ruleID := strings.TrimSpace(ctx.Param("rule_id"))
+	if ruleID == "" {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "rule_id 不能为空"})
+		return
+	}
+
+	var req struct {
+		SensitiveType string         `json:"sensitive_type"`
+		RiskLevel     string         `json:"risk_level"`
+		Enabled       *bool          `json:"enabled"`
+		Content       map[string]any `json:"content"`
+	}
+	if err := json.Unmarshal(ctx.Request.Body(), &req); err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "请求体解析失败"})
+		return
+	}
+
+	var updated model.GeneratedRule
+	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
+		var rule model.GeneratedRule
+		if err := tx.Where("id = ?", ruleID).First(&rule).Error; err != nil {
+			return err
+		}
+		version, err := createRuleVersion(tx, "rule_update")
+		if err != nil {
+			return err
+		}
+		updates := map[string]any{"version": version, "updated_at": time.Now()}
+		if strings.TrimSpace(req.SensitiveType) != "" {
+			updates["sensitive_type"] = strings.TrimSpace(req.SensitiveType)
+		}
+		if strings.TrimSpace(req.RiskLevel) != "" {
+			updates["risk_level"] = normalizeRiskLevel(req.RiskLevel)
+		}
+		if req.Enabled != nil {
+			updates["enabled"] = *req.Enabled
+			if *req.Enabled {
+				updates["deleted_at"] = nil
+			}
+		}
+		if req.Content != nil {
+			updates["content"] = core.RuleContentJSON(req.Content)
+		}
+		if err := tx.Model(&rule).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ?", ruleID).First(&updated).Error
+	}); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "规则不存在"})
+		} else {
+			zap.L().Error("更新规则失败", zap.String("rule_id", ruleID), zap.Error(err))
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "更新规则失败"})
+		}
+		return
+	}
+
+	content := map[string]any{}
+	if err := json.Unmarshal([]byte(updated.Content), &content); err != nil {
+		zap.L().Warn("解析更新后规则内容失败", zap.String("rule_id", updated.ID), zap.Error(err))
+	}
+	ctx.JSON(consts.StatusOK, RuleResp{
+		RuleID:        updated.ID,
+		RuleType:      updated.RuleType,
+		SensitiveType: updated.SensitiveType,
+		RiskLevel:     updated.RiskLevel,
+		Source:        updated.Source,
+		Content:       content,
+	})
+}
+
+func DeleteRule(_ context.Context, ctx *app.RequestContext) {
+	ruleID := strings.TrimSpace(ctx.Param("rule_id"))
+	if ruleID == "" {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "rule_id 不能为空"})
+		return
+	}
+
+	deletedAt := time.Now()
+	var version int
+	if err := dal.DB.Transaction(func(tx *gorm.DB) error {
+		var rule model.GeneratedRule
+		if err := tx.Where("id = ?", ruleID).First(&rule).Error; err != nil {
+			return err
+		}
+		newVersion, err := createRuleVersion(tx, "rule_delete")
+		if err != nil {
+			return err
+		}
+		version = newVersion
+		return tx.Model(&rule).Updates(map[string]any{
+			"enabled":    false,
+			"deleted_at": &deletedAt,
+			"version":    newVersion,
+			"updated_at": deletedAt,
+		}).Error
+	}); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			ctx.JSON(consts.StatusNotFound, map[string]string{"error": "规则不存在"})
+		} else {
+			zap.L().Error("删除规则失败", zap.String("rule_id", ruleID), zap.Error(err))
+			ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "删除规则失败"})
+		}
+		return
+	}
+
+	ctx.JSON(consts.StatusOK, map[string]any{"rule_id": ruleID, "deleted": true, "rule_version": version})
 }
 
 func GetSensitiveFileInfo(_ context.Context, ctx *app.RequestContext) {
@@ -889,13 +1007,14 @@ func BatchSyncRules(_ context.Context, ctx *app.RequestContext) {
 	for _, r := range req.Rules {
 		resp := getRuleSet(r.Version)
 		results = append(results, map[string]any{
-			"sensitive_type":  r.SensitiveType,
-			"version":         r.Version,
-			"latest_version":  resp.LatestVersion,
-			"rules":           resp.Rules,
-			"fingerprints":    resp.Fingerprints,
-			"semantic_labels": resp.SemanticLabels,
-			"config":          resp.Config,
+			"sensitive_type":   r.SensitiveType,
+			"version":          r.Version,
+			"latest_version":   resp.LatestVersion,
+			"rules":            resp.Rules,
+			"deleted_rule_ids": resp.DeletedRuleIDs,
+			"fingerprints":     resp.Fingerprints,
+			"semantic_labels":  resp.SemanticLabels,
+			"config":           resp.Config,
 		})
 	}
 	ctx.JSON(consts.StatusOK, map[string]any{"results": results})

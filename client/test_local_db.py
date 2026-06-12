@@ -97,6 +97,46 @@ class LocalDBTest(unittest.TestCase):
 
         self.assertEqual(config["simhash_threshold"], 5)
 
+    def test_delete_rules_removes_cached_rules(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "tags.db"
+            db = LocalDB(str(db_path))
+            try:
+                db.save_rules([
+                    {"rule_id": "rule_1", "rule_type": "regex", "sensitive_type": "固定格式", "risk_level": "high", "content": {"pattern": "secret"}},
+                    {"rule_id": "rule_2", "rule_type": "keyword", "sensitive_type": "客户资料", "risk_level": "medium", "content": {"keywords": ["客户"]}},
+                ], [], [])
+                db.delete_rules(["rule_1"])
+                rules = db.load_rules()
+            finally:
+                db.close()
+
+        self.assertEqual([rule["rule_id"] for rule in rules], ["rule_2"])
+
+    def test_clear_rule_cache_removes_synced_rule_data(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "tags.db"
+            db = LocalDB(str(db_path))
+            try:
+                db.save_config({"simhash_threshold": 5})
+                db.save_rules(
+                    [{"rule_id": "rule_1", "rule_type": "regex", "sensitive_type": "固定格式", "risk_level": "high", "content": {"pattern": "secret"}}],
+                    [{"sensitive_file_id": "file_1", "sha256": "abc", "simhash": "def"}],
+                    [{"sensitive_file_id": "file_1", "semantic_labels": ["客户名单"], "embedding_id": "emb_1", "model_name": "rule-fallback"}],
+                )
+                db.clear_rule_cache()
+                rules = db.load_rules()
+                fingerprints = db.load_fingerprints()
+                labels = db.load_semantic_labels()
+                config = db.load_config()
+            finally:
+                db.close()
+
+        self.assertEqual(rules, [])
+        self.assertEqual(fingerprints, [])
+        self.assertEqual(labels, {})
+        self.assertEqual(config, {})
+
 
 if __name__ == "__main__":
     unittest.main()

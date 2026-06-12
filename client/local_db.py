@@ -112,6 +112,21 @@ class LocalDB:
                 config[row["key"]] = value
         return config
 
+    def clear_rule_cache(self):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM cached_rules")
+        cursor.execute("DELETE FROM cached_fingerprints")
+        cursor.execute("DELETE FROM cached_semantic_labels")
+        cursor.execute("DELETE FROM local_config")
+        self.conn.commit()
+
+    def delete_rules(self, rule_ids):
+        if not rule_ids:
+            return
+        cursor = self.conn.cursor()
+        cursor.executemany("DELETE FROM cached_rules WHERE rule_id = ?", [(rule_id,) for rule_id in rule_ids])
+        self.conn.commit()
+
     def save_rules(self, rules, fingerprints, semantic_labels=None):
         cursor = self.conn.cursor()
         for r in rules:

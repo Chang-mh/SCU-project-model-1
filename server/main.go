@@ -73,6 +73,8 @@ func main() {
 	h.POST("/api/server/regex-test", router.RegexTest)
 	h.POST("/api/server/fingerprint", router.FingerprintCompute)
 	h.POST("/api/server/content-scan", router.ContentScan)
+	h.PATCH("/api/server/rules/:rule_id", router.UpdateRule)
+	h.DELETE("/api/server/rules/:rule_id", router.DeleteRule)
 
 	h.GET("/api/client/rules", router.SyncRules)
 	h.POST("/api/client/rules/batch", router.BatchSyncRules)
