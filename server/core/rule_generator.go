@@ -135,7 +135,10 @@ func GenerateRules(text, sensitiveType, riskLevel, description string) []RuleDat
 	var rules []RuleData
 	for _, item := range BuiltinRegexRules {
 		re, err := regexp.Compile(item.Pattern)
-		if err != nil || !re.MatchString(text) {
+		if err != nil {
+			continue
+		}
+		if len(filterRegexMatches(item.Name, re.FindAllString(text, -1))) == 0 {
 			continue
 		}
 		rules = append(rules, RuleData{

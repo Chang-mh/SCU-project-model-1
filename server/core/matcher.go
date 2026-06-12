@@ -16,7 +16,7 @@ func MatchBuiltinRegex(content string) []ContentMatch {
 		if err != nil {
 			continue
 		}
-		matches := re.FindAllString(content, -1)
+		matches := filterRegexMatches(rule.Name, re.FindAllString(content, -1))
 		if len(matches) == 0 {
 			continue
 		}

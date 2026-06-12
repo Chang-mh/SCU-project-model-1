@@ -3,6 +3,7 @@ import unittest
 from matcher import (
     compute_score,
     compute_simhash,
+    luhn_check,
     match_keyword,
     match_regex,
     match_semantic_labels,
@@ -36,6 +37,25 @@ class MatcherTest(unittest.TestCase):
         hits = match_regex("手机号 13800138000，邮箱 test@example.com，身份证 11010119900307123X", rules)
 
         self.assertEqual({hit["rule_name"] for hit in hits}, {"mobile_phone", "email", "id_card"})
+
+    def test_match_regex_filters_invalid_bank_card_by_luhn(self):
+        rules = [
+            {
+                "rule_id": "bank_card",
+                "rule_type": "regex",
+                "risk_level": "high",
+                "content": {"name": "bank_card", "pattern": r"\b\d{16,19}\b"},
+            }
+        ]
+
+        valid_hits = match_regex("银行卡号 4111111111111111", rules)
+        invalid_hits = match_regex("普通流水号 4111111111111112", rules)
+
+        self.assertTrue(luhn_check("4111111111111111"))
+        self.assertFalse(luhn_check("4111111111111112"))
+        self.assertEqual(len(valid_hits), 1)
+        self.assertEqual(valid_hits[0]["matches"], ["4111111111111111"])
+        self.assertEqual(invalid_hits, [])
 
     def test_match_keyword_respects_min_hits(self):
         rules = [

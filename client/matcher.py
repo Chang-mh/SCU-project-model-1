@@ -23,6 +23,38 @@ SEMANTIC_LABEL_KEYWORDS = {
 }
 
 
+def luhn_check(number: str) -> bool:
+    """Luhn 算法校验银行卡号。"""
+    digits = []
+    for char in number:
+        if not char.isdigit():
+            return False
+        digits.append(int(char))
+    if not 16 <= len(digits) <= 19:
+        return False
+
+    total = 0
+    for index, digit in enumerate(reversed(digits)):
+        if index % 2 == 1:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def _filter_regex_matches(rule_name: str, matches: list) -> list:
+    normalized = []
+    for match in matches:
+        if isinstance(match, tuple):
+            normalized.append("".join(str(part) for part in match if part))
+        else:
+            normalized.append(str(match))
+    if rule_name != "bank_card":
+        return normalized
+    return [match for match in normalized if luhn_check(match)]
+
+
 def compute_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -101,7 +133,7 @@ def match_regex(text: str, rules: list) -> list:
         if not pattern:
             continue
         try:
-            matches = re.findall(pattern, text)
+            matches = _filter_regex_matches(content.get("name", ""), re.findall(pattern, text))
             if matches:
                 hits.append({
                     "rule_id": rule.get("rule_id"),
@@ -109,6 +141,7 @@ def match_regex(text: str, rules: list) -> list:
                     "pattern": pattern,
                     "risk_level": rule.get("risk_level", "medium"),
                     "match_count": len(matches),
+                    "matches": matches,
                 })
         except re.error:
             continue
