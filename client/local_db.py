@@ -1,5 +1,6 @@
 """客户端本地 SQLite 标签库管理"""
 
+import json
 import sqlite3
 from datetime import datetime
 from typing import Optional
@@ -94,6 +95,8 @@ class LocalDB:
     def save_config(self, config: dict):
         cursor = self.conn.cursor()
         for key, value in (config or {}).items():
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
             cursor.execute(
                 "INSERT OR REPLACE INTO local_config (key, value) VALUES (?, ?)",
                 (str(key), str(value)),
@@ -104,12 +107,23 @@ class LocalDB:
         cursor = self.conn.cursor()
         cursor.execute("SELECT key, value FROM local_config")
         config = {}
+        numeric_keys = {"simhash_threshold"}
+        json_keys = {"semantic_label_hints"}
         for row in cursor.fetchall():
+            key = row["key"]
             value = row["value"]
-            if value is not None and value.isdigit():
-                config[row["key"]] = int(value)
+            if key in numeric_keys and value is not None:
+                try:
+                    config[key] = int(value)
+                except ValueError:
+                    config[key] = value
+            elif key in json_keys and value:
+                try:
+                    config[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    config[key] = {}
             else:
-                config[row["key"]] = value
+                config[key] = value
         return config
 
     def clear_rule_cache(self):

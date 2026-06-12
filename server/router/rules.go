@@ -53,7 +53,8 @@ type RuleSyncResponse struct {
 }
 
 type SyncConfig struct {
-	SimHashThreshold int `json:"simhash_threshold"`
+	SimHashThreshold   int                 `json:"simhash_threshold"`
+	SemanticLabelHints map[string][]string `json:"semantic_label_hints"`
 }
 
 type RuleResp struct {
@@ -140,7 +141,7 @@ func simhashThresholdFromEnv() int {
 }
 
 func syncConfig() SyncConfig {
-	return SyncConfig{SimHashThreshold: simhashThresholdFromEnv()}
+	return SyncConfig{SimHashThreshold: simhashThresholdFromEnv(), SemanticLabelHints: core.SemanticLabelHints}
 }
 
 func normalizeRiskLevel(value string) string {

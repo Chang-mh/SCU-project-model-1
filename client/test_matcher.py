@@ -110,6 +110,21 @@ class MatcherTest(unittest.TestCase):
         self.assertEqual({hit["semantic_label"] for hit in hits}, {"客户名单", "报价信息"})
         self.assertTrue(all(hit["sensitive_file_id"] == "file_1" for hit in hits))
 
+    def test_match_semantic_labels_prefers_synced_hints(self):
+        semantic_labels = {
+            "file_1": {
+                "semantic_labels": ["自定义标签"],
+                "embedding_id": "emb_1",
+            }
+        }
+
+        hits_without_hints = match_semantic_labels("项目代号蓝鲸", semantic_labels)
+        hits_with_hints = match_semantic_labels("项目代号蓝鲸", semantic_labels, {"自定义标签": ["蓝鲸"]})
+
+        self.assertEqual(hits_without_hints, [])
+        self.assertEqual(len(hits_with_hints), 1)
+        self.assertEqual(hits_with_hints[0]["semantic_label"], "自定义标签")
+
     def test_compute_score_adds_semantic_hits_with_cap(self):
         semantic_hits = [{"semantic_label": "客户名单"}, {"semantic_label": "报价信息"}]
 

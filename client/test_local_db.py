@@ -90,12 +90,13 @@ class LocalDBTest(unittest.TestCase):
             db_path = Path(tmpdir) / "tags.db"
             db = LocalDB(str(db_path))
             try:
-                db.save_config({"simhash_threshold": 5})
+                db.save_config({"simhash_threshold": 5, "semantic_label_hints": {"客户名单": ["客户名称"]}})
                 config = db.load_config()
             finally:
                 db.close()
 
         self.assertEqual(config["simhash_threshold"], 5)
+        self.assertEqual(config["semantic_label_hints"], {"客户名单": ["客户名称"]})
 
     def test_delete_rules_removes_cached_rules(self):
         with tempfile.TemporaryDirectory() as tmpdir:

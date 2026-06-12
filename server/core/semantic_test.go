@@ -46,3 +46,11 @@ func TestBuildSemanticPromptUsesNamedPlaceholders(t *testing.T) {
 		t.Fatalf("buildSemanticPrompt() lost document literal %%s: %q", prompt)
 	}
 }
+
+func TestSemanticLabelHintsDriveRuleFallback(t *testing.T) {
+	result := analyzeWithRules("内部培训资料包含未公开课件", "", "")
+
+	if !containsString(result.SemanticLabels, "内部培训资料") {
+		t.Fatalf("analyzeWithRules().SemanticLabels = %#v, want 内部培训资料", result.SemanticLabels)
+	}
+}

@@ -11,15 +11,18 @@ except Exception:
 
 
 SEMANTIC_LABEL_KEYWORDS = {
-    "客户名单": ["客户", "联系人", "名单", "电话", "邮箱", "手机"],
-    "客户资料": ["客户", "联系人", "名单", "电话", "邮箱", "报价"],
-    "报价信息": ["报价", "合同金额", "价格", "万元", "单价", "总价"],
-    "财务预算": ["财务", "预算", "成本", "利润", "营收", "报表"],
+    "客户名单": ["客户", "联系人", "客户名称", "名单", "电话", "邮箱", "手机"],
+    "报价信息": ["报价", "报价单", "合同金额", "万元", "价格", "单价", "总价"],
+    "财务预算": ["财务", "预算", "成本", "利润", "财报", "营收", "报表"],
     "薪资明细": ["薪资", "工资", "奖金", "绩效", "社保", "个税"],
-    "源代码": ["源码", "接口", "token", "secret", "password", "api_key"],
-    "运维账号": ["账号", "密码", "token", "secret", "数据库", "内网", "ssh"],
-    "合同保密": ["合同", "保密", "甲方", "乙方", "违约", "条款"],
-    "商业机密": ["商业机密", "内部", "未公开", "战略", "规划", "报价"],
+    "保密协议": ["保密", "协议", "不得披露", "商业机密"],
+    "研发设计文档": ["研发", "设计", "架构", "技术方案", "系统架构"],
+    "源代码说明": ["源代码", "源码", "接口", "函数", "数据库连接", "api_key"],
+    "内部培训资料": ["内部培训", "培训资料", "课件", "培训"],
+    "未公开财报": ["未公开财报", "财报", "未公开", "利润", "营收"],
+    "运维账号": ["账号", "密码", "token", "secret", "运维", "内网", "ssh"],
+    "安全漏洞信息": ["漏洞", "CVE", "修复", "攻击"],
+    "战略规划": ["战略", "规划", "商业计划", "未公开"],
 }
 
 
@@ -178,14 +181,15 @@ def _match_keywords(text: str, keywords: list) -> list:
             matched.append(kw)
     return matched
 
-def match_semantic_labels(text: str, semantic_labels: dict) -> list:
-    """语义标签辅助匹配，基于服务端同步的标签和本地关键词映射。"""
+def match_semantic_labels(text: str, semantic_labels: dict, semantic_label_hints: Optional[dict] = None) -> list:
+    """语义标签辅助匹配，优先使用服务端同步的标签关键词映射。"""
+    label_hints = semantic_label_hints or SEMANTIC_LABEL_KEYWORDS
     hits = []
     seen = set()
     for sensitive_file_id, detail in (semantic_labels or {}).items():
         labels = detail.get("semantic_labels", []) or []
         for label in labels:
-            keywords = set(SEMANTIC_LABEL_KEYWORDS.get(label, []))
+            keywords = set(label_hints.get(label, []))
             keywords.add(label)
             matched = _match_keywords(text, list(keywords))
             if not matched:

@@ -110,13 +110,14 @@ def scan_directory(path: str, db: LocalDB) -> list[dict]:
     semantic_labels = db.load_semantic_labels()
     config = db.load_config()
     simhash_threshold = int(config.get("simhash_threshold", 3))
+    semantic_label_hints = config.get("semantic_label_hints") or None
     logger.info(f"加载本地规则: {len(rules)} 条, 指纹: {len(fingerprints)} 条, 语义标签: {len(semantic_labels)} 条, SimHash阈值: {simhash_threshold}")
 
     results = []
     for file_path in iter_files(root):
         try:
             if file_path.suffix.lower() in ARCHIVE_SUFFIXES:
-                zip_results = scan_zip_file(file_path, rules, fingerprints, semantic_labels, simhash_threshold=simhash_threshold)
+                zip_results = scan_zip_file(file_path, rules, fingerprints, semantic_labels, semantic_label_hints, simhash_threshold=simhash_threshold)
                 for result in zip_results:
                     db.upsert_file_tag(
                         file_path=result.file_path,
@@ -135,7 +136,7 @@ def scan_directory(path: str, db: LocalDB) -> list[dict]:
                     else:
                         logger.info(f"扫描完成: {result.file_path}, score={result.match_score}")
                 continue
-            result = scan_file(file_path, rules, fingerprints, semantic_labels, simhash_threshold=simhash_threshold)
+            result = scan_file(file_path, rules, fingerprints, semantic_labels, semantic_label_hints, simhash_threshold=simhash_threshold)
             db.upsert_file_tag(
                 file_path=result.file_path,
                 file_hash=result.file_hash,
@@ -179,7 +180,7 @@ def is_safe_zip_member(name: str) -> bool:
     return not path.is_absolute() and ".." not in path.parts
 
 
-def scan_zip_file(zip_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, simhash_threshold: int = 3, depth: int = 0) -> list[ScanResult]:
+def scan_zip_file(zip_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, semantic_label_hints: Optional[dict] = None, simhash_threshold: int = 3, depth: int = 0) -> list[ScanResult]:
     if depth >= MAX_ZIP_DEPTH:
         logger.warning(f"跳过超过递归层级限制的 ZIP: {zip_path}")
         return []
@@ -219,7 +220,7 @@ def scan_zip_file(zip_path: Path, rules: list, fingerprints: list, semantic_labe
                         tmp.write(data)
                         nested_path = Path(tmp.name)
                     try:
-                        for result in scan_zip_file(nested_path, rules, fingerprints, semantic_labels, simhash_threshold, depth + 1):
+                        for result in scan_zip_file(nested_path, rules, fingerprints, semantic_labels, semantic_label_hints, simhash_threshold, depth + 1):
                             result.file_path = f"{virtual_path}!{result.file_path.split('!', 1)[-1]}"
                             results.append(result)
                     finally:
@@ -233,7 +234,7 @@ def scan_zip_file(zip_path: Path, rules: list, fingerprints: list, semantic_labe
                         tmp.write(data)
                         source_path = Path(tmp.name)
                 try:
-                    result = scan_bytes(virtual_path, member_name, data, rules, fingerprints, semantic_labels, simhash_threshold=simhash_threshold, source_path=source_path)
+                    result = scan_bytes(virtual_path, member_name, data, rules, fingerprints, semantic_labels, semantic_label_hints, simhash_threshold=simhash_threshold, source_path=source_path)
                     results.append(result)
                 finally:
                     if source_path is not None:
@@ -243,7 +244,7 @@ def scan_zip_file(zip_path: Path, rules: list, fingerprints: list, semantic_labe
     return results
 
 
-def scan_bytes(display_path: str, file_name: str, data: bytes, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, simhash_threshold: int = 3, source_path: Optional[Path] = None) -> ScanResult:
+def scan_bytes(display_path: str, file_name: str, data: bytes, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, semantic_label_hints: Optional[dict] = None, simhash_threshold: int = 3, source_path: Optional[Path] = None) -> ScanResult:
     sha256 = compute_sha256(data)
 
     sha_hit = match_sha256(sha256, fingerprints)
@@ -282,7 +283,7 @@ def scan_bytes(display_path: str, file_name: str, data: bytes, rules: list, fing
     regex_hits = match_regex(text, rules) if text else []
     keyword_hits = match_keyword(text, rules) if text else []
     combined_hits = match_combined(text, rules) if text else []
-    semantic_hits = match_semantic_labels(text, semantic_labels) if text else []
+    semantic_hits = match_semantic_labels(text, semantic_labels, semantic_label_hints) if text else []
 
     score = compute_score(bool(sha_hit), bool(sim_hit), regex_hits, keyword_hits, combined_hits, semantic_hits)
     sensitive, confidence_level = compute_detection_status(score)
@@ -313,9 +314,9 @@ def scan_bytes(display_path: str, file_name: str, data: bytes, rules: list, fing
     return ScanResult(display_path, sha256, sensitive, sensitive_type, risk_level, sensitive_file_id, score, confidence_level, detail)
 
 
-def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, simhash_threshold: int = 3) -> ScanResult:
+def scan_file(file_path: Path, rules: list, fingerprints: list, semantic_labels: Optional[dict] = None, semantic_label_hints: Optional[dict] = None, simhash_threshold: int = 3) -> ScanResult:
     data = file_path.read_bytes()
-    return scan_bytes(str(file_path), file_path.name, data, rules, fingerprints, semantic_labels, simhash_threshold=simhash_threshold, source_path=file_path)
+    return scan_bytes(str(file_path), file_path.name, data, rules, fingerprints, semantic_labels, semantic_label_hints, simhash_threshold=simhash_threshold, source_path=file_path)
 
 
 def extract_text(file_path: Path, data: bytes) -> str:
