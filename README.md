@@ -75,6 +75,8 @@ go run .
 
 未配置方舟时, 语义识别自动降级为关键词规则推理, 不影响基本功能。PDF 会优先使用 Go 原生文本解析；扫描件或原生解析失败时再尝试 PaddleOCR，未配置 PaddleOCR 时会降级为启发式文本提取。
 
+**Embedding 能力边界：** 服务端会在配置 `ARK_EMBEDDING_MODEL` 后为样本文本生成 embedding，并保存到 `semantic_features` 表；客户端规则同步当前只下发 `embedding_id` 和 `semantic_labels`，本地扫描中的语义命中来自“语义标签 + 关键词映射”辅助匹配，不是本地向量相似检索。后续如需真正的向量相似识别，可增加服务端 semantic-search 接口或下发向量后在客户端计算 cosine similarity。
+
 ### API 接口
 
 上传样本:
@@ -147,3 +149,19 @@ python -m unittest discover -p "test_*.py" -v
 ```
 
 扫描结果保存在客户端本地 `sensitive_tags.db`, 不会修改被扫描文件. 客户端会递归扫描 `.zip` 压缩包内的普通文件，并通过 `SCANNER_MAX_ZIP_DEPTH`、`SCANNER_MAX_ZIP_ENTRIES`、`SCANNER_MAX_ZIP_TOTAL_SIZE` 限制递归层级、条目数和解压总量，同时跳过存在 Zip Slip 风险的条目。
+
+### 当前扫描格式支持矩阵
+
+| 文件类型 | 当前状态 | 说明 |
+|---|---|---|
+| txt / csv / json / xml / md | 已支持 | 直接读取并使用 `chardet` 做编码探测 |
+| py / java / go / sql / 配置文件 | 已支持 | 按文本读取，并执行密钥、连接串、账号凭证等规则 |
+| docx | 已支持 | 客户端使用 `python-docx` 提取段落和表格文本 |
+| xlsx | 已支持 | 客户端使用 `openpyxl` 提取单元格文本 |
+| pdf | 已支持文本层提取 | 客户端使用 `pypdf`；扫描版 PDF OCR 仍属于增强能力 |
+| zip | 已支持递归扫描 | 限制层级、条目数、总大小，并跳过 Zip Slip 风险条目 |
+| ppt / pptx | 暂不支持 | 扫描结果会保留 SHA-256 判断，并在 `match_detail.skip_reason` 标记 `unsupported_format` |
+| doc / xls | 暂不支持 | 老版 Office 解析属于后续增强 |
+| 图片 | 暂不支持 | OCR 属于后续增强 |
+| eml / msg | 暂不支持 | 邮件正文与附件解析属于后续增强 |
+| 二进制文件 | 部分支持 | 可做 SHA-256 指纹匹配，不做全文/元数据解析 |

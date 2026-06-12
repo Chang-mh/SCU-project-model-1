@@ -83,6 +83,16 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(results[0]["confidence_level"], "low_confidence")
         self.assertEqual(results[0]["sensitive_type"], "客户资料")
 
+    def test_scan_file_marks_unsupported_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "slides.pptx"
+            path.write_bytes(b"pptx placeholder")
+
+            result = scan_file(path, rules=[], fingerprints=[], semantic_labels={})
+
+        self.assertEqual(result.match_score, 0)
+        self.assertEqual(result.match_detail["skip_reason"], "unsupported_format")
+
     def test_zip_slip_member_is_rejected(self):
         self.assertFalse(is_safe_zip_member("../secret.txt"))
         self.assertFalse(is_safe_zip_member("safe/../../secret.txt"))

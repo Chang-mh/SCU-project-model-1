@@ -62,6 +62,10 @@ TEXT_SUFFIXES = {
 }
 OFFICE_SUFFIXES = {".docx", ".xlsx", ".pdf"}
 ARCHIVE_SUFFIXES = {".zip"}
+UNSUPPORTED_SUFFIXES = {
+    ".ppt", ".pptx", ".doc", ".xls", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff",
+    ".eml", ".msg",
+}
 SKIP_DIRS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "target", "out", ".mypy_cache", ".pytest_cache", ".idea", ".vscode"}
 DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024
 MAX_FILE_SIZE = int(os.getenv("SCANNER_MAX_FILE_SIZE", DEFAULT_MAX_FILE_SIZE))
@@ -262,13 +266,16 @@ def scan_bytes(display_path: str, file_name: str, data: bytes, rules: list, fing
     extract_error = None
     skip_reason = None
     scan_path = source_path or Path(file_name)
-    try:
-        text = extract_text_from_bytes(scan_path, data, source_path=source_path)
-    except Exception as exc:
-        extract_error = str(exc)
-        logger.warning(f"文本提取失败: {display_path}, reason={extract_error}")
-    if not text and scan_path.suffix.lower() == ".pdf":
-        skip_reason = "pdf_text_empty" if PdfReader is not None else "pdf_reader_missing"
+    if scan_path.suffix.lower() in UNSUPPORTED_SUFFIXES:
+        skip_reason = "unsupported_format"
+    else:
+        try:
+            text = extract_text_from_bytes(scan_path, data, source_path=source_path)
+        except Exception as exc:
+            extract_error = str(exc)
+            logger.warning(f"文本提取失败: {display_path}, reason={extract_error}")
+        if not text and scan_path.suffix.lower() == ".pdf":
+            skip_reason = "pdf_text_empty" if PdfReader is not None else "pdf_reader_missing"
 
     simhash = compute_simhash(text) if text else ""
     sim_hit = match_simhash(simhash, fingerprints, threshold=simhash_threshold) if simhash else None
