@@ -11,10 +11,14 @@ set -Eeuo pipefail
 #   E2E_SERVER_URL=http://127.0.0.1:8080
 #   E2E_TOKEN=your-server-token
 #   E2E_KEEP_TMP=1
+#   E2E_REQUIRE_AGENT=1      # fail if semantic analysis uses rule-fallback instead of ChatModel
+#   E2E_REQUIRE_EMBEDDING=0  # set to 1 to also require non-empty embedding_id
 #   CLIENT_PYTHON=client/.venv/Scripts/python.exe
 
 SERVER_URL="${E2E_SERVER_URL:-http://127.0.0.1:8080}"
 E2E_TOKEN="${E2E_TOKEN:-}"
+E2E_REQUIRE_AGENT="${E2E_REQUIRE_AGENT:-1}"
+E2E_REQUIRE_EMBEDDING="${E2E_REQUIRE_EMBEDDING:-0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_DIR="$ROOT_DIR/client"
 RUN_ID="$(date +%Y%m%d%H%M%S)-$$"
@@ -242,6 +246,8 @@ auto_fix_wsl_server_url
 log "Using server: $SERVER_URL"
 log "Using Python: $PYTHON_BIN"
 log "Temporary directory: $TMP_ROOT"
+log "Require semantic Agent ChatModel: $E2E_REQUIRE_AGENT"
+log "Require embedding_id: $E2E_REQUIRE_EMBEDDING"
 
 mkdir -p "$UPLOAD_DIR" "$SCAN_DIR/nested"
 
@@ -342,6 +348,10 @@ if int(data.get("generated_rules_count", 0)) <= 0:
 fingerprint = data.get("fingerprint") or {}
 if not fingerprint.get("sha256") or not fingerprint.get("simhash"):
     raise SystemExit("missing fingerprint sha256/simhash")
+if not data.get("semantic_labels"):
+    raise SystemExit("missing semantic_labels")
+if not data.get("explanation"):
+    raise SystemExit("missing explanation")
 rule_types = {r.get("rule_type") or r.get("type") for r in data.get("generated_rules", [])}
 for expected in ["regex", "keyword", "combined"]:
     if expected not in rule_types:
@@ -349,6 +359,13 @@ for expected in ["regex", "keyword", "combined"]:
 '
 
 UPLOAD_JSON_PY="$(py_path "$upload_json")"
+SAMPLE_ID="$($PYTHON_BIN - "$UPLOAD_JSON_PY" <<'PY' | tr -d '\r\n'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    data = json.load(f)
+print(data.get('sensitive_file_id', ''))
+PY
+)"
 SAMPLE_SHA256="$($PYTHON_BIN - "$UPLOAD_JSON_PY" <<'PY' | tr -d '\r\n'
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as f:
@@ -356,6 +373,9 @@ with open(sys.argv[1], encoding='utf-8') as f:
 print((data.get('fingerprint') or {}).get('sha256', ''))
 PY
 )"
+[[ -n "$SAMPLE_ID" ]] || fail "Could not extract sensitive_file_id from upload response"
+[[ -n "$SAMPLE_SHA256" ]] || fail "Could not extract sha256 from upload response"
+pass "Extracted uploaded sample id and sha256"
 
 log "TC03: duplicate upload should be rejected"
 duplicate_json="$TMP_ROOT/duplicate.json"
@@ -404,6 +424,43 @@ if "simhash_threshold" not in config:
 if "semantic_label_hints" not in config:
     raise SystemExit("missing config.semantic_label_hints")
 '
+
+log "TC05.1: semantic Agent should use ChatModel instead of rule fallback"
+RULES_JSON_PY="$(py_path "$rules_json")"
+"$PYTHON_BIN" - "$RULES_JSON_PY" "$SAMPLE_ID" "$E2E_REQUIRE_AGENT" "$E2E_REQUIRE_EMBEDDING" <<'PY'
+import json
+import sys
+
+rules_path, sample_id, require_agent, require_embedding = sys.argv[1:5]
+with open(rules_path, encoding="utf-8") as f:
+    data = json.load(f)
+semantic_labels = data.get("semantic_labels") or []
+match = next((item for item in semantic_labels if item.get("sensitive_file_id") == sample_id), None)
+if not match:
+    raise SystemExit(f"semantic label for uploaded sample not found: {sample_id}")
+model_name = (match.get("model_name") or "").strip()
+if not model_name:
+    raise SystemExit(f"model_name is empty: {match}")
+if require_agent == "1" and model_name == "rule-fallback":
+    raise SystemExit(
+        "semantic analysis used rule fallback, not ChatModel. "
+        "This means AnalyzeSemantic() was called, but analyzeWithLLM() failed and fell back to analyzeWithRules(). "
+        "Check server logs for '大模型语义识别失败', and verify ARK_API_KEY / ARK_BASE_URL / ARK_CHAT_MODEL in .env. "
+        f"semantic_feature={match}"
+    )
+if require_embedding == "1" and not (match.get("embedding_id") or "").strip():
+    raise SystemExit(f"embedding_id is empty while E2E_REQUIRE_EMBEDDING=1: {match}")
+labels = match.get("semantic_labels") or []
+if not labels:
+    raise SystemExit(f"semantic_labels is empty: {match}")
+print(json.dumps({
+    "sample_id": sample_id,
+    "model_name": model_name,
+    "embedding_id": match.get("embedding_id"),
+    "semantic_labels": labels,
+}, ensure_ascii=False, indent=2))
+PY
+pass "Semantic Agent record found and model path validated"
 
 log "TC06: client sync writes local SQLite cache"
 sync_json="$TMP_ROOT/client_sync.json"
