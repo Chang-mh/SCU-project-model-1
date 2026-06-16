@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -40,7 +41,11 @@ const (
 	EnvArkChatModel      = "ARK_CHAT_MODEL"      // 方舟 ChatModel 接入点/模型 ID
 	EnvArkEmbeddingModel = "ARK_EMBEDDING_MODEL" // 方舟 Embedding 接入点/模型 ID
 	EnvArkEndpointID     = "ARK_ENDPOINT_ID"     // 兼容旧配置: 方舟 ChatModel 接入点 ID
+	EnvEmbeddingProvider = "EMBEDDING_PROVIDER"  // 可选: ollama 或 ark, 默认按配置自动选择
+	EnvOllamaBaseURL     = "OLLAMA_BASE_URL"     // Ollama HTTP API 地址
+	EnvOllamaEmbedModel  = "OLLAMA_EMBED_MODEL"  // Ollama embedding 模型名, 例如 bge-m3
 	DefaultArkURL        = "https://ark.cn-beijing.volces.com/api/v3"
+	DefaultOllamaURL     = "http://127.0.0.1:11434"
 	MaxTextForLLM        = 4000 // 发送给大模型的最大字符数
 )
 
@@ -219,15 +224,42 @@ func attachEmbedding(text string, result *SemanticResult) {
 var errEmbeddingNotConfigured = fmt.Errorf("embedding model not configured")
 
 func GenerateEmbedding(text string) ([]float64, string, error) {
-	apiKey := os.Getenv(EnvArkAPIKey)
-	modelName := os.Getenv(EnvArkEmbeddingModel)
-	if apiKey == "" || apiKey == "xxxxx" || modelName == "" || modelName == "xxxxx" {
-		return nil, "", errEmbeddingNotConfigured
+	provider := strings.ToLower(strings.TrimSpace(os.Getenv(EnvEmbeddingProvider)))
+	switch provider {
+	case "", "auto":
+		if hasUsableEnv(EnvOllamaEmbedModel) {
+			return generateOllamaEmbedding(text)
+		}
+		return generateArkEmbedding(text)
+	case "ollama":
+		return generateOllamaEmbedding(text)
+	case "ark", "volcengine", "volcano":
+		return generateArkEmbedding(text)
+	default:
+		return nil, "", fmt.Errorf("unsupported embedding provider %q", provider)
 	}
+}
+
+func hasUsableEnv(name string) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	return value != "" && value != "xxx" && value != "xxxxx"
+}
+
+func truncateForEmbedding(text string) string {
 	truncated := text
 	if len([]rune(truncated)) > MaxTextForLLM {
 		truncated = string([]rune(truncated)[:MaxTextForLLM])
 	}
+	return truncated
+}
+
+func generateArkEmbedding(text string) ([]float64, string, error) {
+	apiKey := os.Getenv(EnvArkAPIKey)
+	modelName := os.Getenv(EnvArkEmbeddingModel)
+	if !hasUsableEnv(EnvArkAPIKey) || !hasUsableEnv(EnvArkEmbeddingModel) {
+		return nil, "", errEmbeddingNotConfigured
+	}
+	truncated := truncateForEmbedding(text)
 
 	payload := map[string]any{
 		"model": modelName,
@@ -274,9 +306,81 @@ func GenerateEmbedding(text string) ([]float64, string, error) {
 	return parsed.Data[0].Embedding, modelName, nil
 }
 
+func generateOllamaEmbedding(text string) ([]float64, string, error) {
+	modelName := strings.TrimSpace(os.Getenv(EnvOllamaEmbedModel))
+	if modelName == "" || modelName == "xxx" || modelName == "xxxxx" {
+		return nil, "", errEmbeddingNotConfigured
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv(EnvOllamaBaseURL)), "/")
+	if baseURL == "" {
+		baseURL = DefaultOllamaURL
+	}
+
+	payload := map[string]any{
+		"model": modelName,
+		"input": truncateForEmbedding(text),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, modelName, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/embed", bytes.NewReader(body))
+	if err != nil {
+		return nil, modelName, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, modelName, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, modelName, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, modelName, fmt.Errorf("ollama embedding request failed: status=%d body=%s", resp.StatusCode, string(respBody))
+	}
+
+	var parsed struct {
+		Embeddings [][]float64 `json:"embeddings"`
+		Embedding  []float64   `json:"embedding"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, modelName, err
+	}
+	if len(parsed.Embeddings) > 0 && len(parsed.Embeddings[0]) > 0 {
+		return parsed.Embeddings[0], modelName, nil
+	}
+	if len(parsed.Embedding) > 0 {
+		return parsed.Embedding, modelName, nil
+	}
+	return nil, modelName, fmt.Errorf("ollama embedding response missing vector")
+}
+
 func embeddingID(modelName, text string) string {
 	sum := sha256.Sum256([]byte(modelName + "\x00" + text))
 	return "emb_" + hex.EncodeToString(sum[:8])
+}
+
+func CosineSimilarity(a, b []float64) (float64, bool) {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0, false
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+	if normA == 0 || normB == 0 {
+		return 0, false
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB)), true
 }
 
 // 规则推理降级方案

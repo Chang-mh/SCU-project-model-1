@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +78,17 @@ type SemanticResp struct {
 	SemanticLabels  []string `json:"semantic_labels"`
 	EmbeddingID     string   `json:"embedding_id"`
 	ModelName       string   `json:"model_name"`
+}
+
+type SemanticSearchResult struct {
+	SensitiveFileID string   `json:"sensitive_file_id"`
+	FileName        string   `json:"file_name"`
+	SensitiveType   string   `json:"sensitive_type"`
+	RiskLevel       string   `json:"risk_level"`
+	SemanticLabels  []string `json:"semantic_labels"`
+	EmbeddingID     string   `json:"embedding_id"`
+	ModelName       string   `json:"model_name"`
+	Score           float64  `json:"score"`
 }
 
 func buildSemanticResps(features []model.SemanticFeature) []SemanticResp {
@@ -1199,5 +1211,103 @@ func ContentScan(_ context.Context, ctx *app.RequestContext) {
 	ctx.JSON(consts.StatusOK, map[string]any{
 		"total":   len(results),
 		"results": results,
+	})
+}
+
+func SemanticSearch(_ context.Context, ctx *app.RequestContext) {
+	var req struct {
+		Content  string  `json:"content"`
+		Query    string  `json:"query"`
+		TopK     int     `json:"top_k"`
+		MinScore float64 `json:"min_score"`
+	}
+	if err := json.Unmarshal(ctx.Request.Body(), &req); err != nil {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "请求体解析失败"})
+		return
+	}
+	queryText := strings.TrimSpace(req.Content)
+	if queryText == "" {
+		queryText = strings.TrimSpace(req.Query)
+	}
+	if queryText == "" {
+		ctx.JSON(consts.StatusBadRequest, map[string]string{"error": "缺少 content 或 query"})
+		return
+	}
+	topK := req.TopK
+	if topK <= 0 {
+		topK = 5
+	}
+	if topK > 50 {
+		topK = 50
+	}
+
+	queryVector, modelName, err := core.GenerateEmbedding(queryText)
+	if err != nil {
+		zap.L().Warn("语义检索生成查询向量失败", zap.Error(err))
+		ctx.JSON(consts.StatusServiceUnavailable, map[string]string{"error": "语义向量模型未就绪或生成失败: " + err.Error()})
+		return
+	}
+
+	var rows []struct {
+		SampleID       string
+		EmbeddingID    string
+		Embedding      string
+		ModelName      string
+		SemanticLabels string
+		FileName       string
+		SensitiveType  string
+		RiskLevel      string
+	}
+	if err := dal.DB.Table("semantic_features").
+		Select("semantic_features.sample_id, semantic_features.embedding_id, semantic_features.embedding, semantic_features.model_name, semantic_features.semantic_labels, sensitive_samples.file_name, sensitive_samples.sensitive_type, sensitive_samples.risk_level").
+		Joins("LEFT JOIN sensitive_samples ON sensitive_samples.id = semantic_features.sample_id").
+		Where("semantic_features.embedding_id <> '' AND semantic_features.embedding <> '' AND semantic_features.embedding <> '[]'").
+		Find(&rows).Error; err != nil {
+		zap.L().Error("查询语义向量库失败", zap.Error(err))
+		ctx.JSON(consts.StatusInternalServerError, map[string]string{"error": "查询语义向量库失败"})
+		return
+	}
+
+	results := make([]SemanticSearchResult, 0, len(rows))
+	for _, row := range rows {
+		var vector []float64
+		if err := json.Unmarshal([]byte(row.Embedding), &vector); err != nil {
+			zap.L().Warn("解析已存语义向量失败", zap.String("sample_id", row.SampleID), zap.Error(err))
+			continue
+		}
+		score, ok := core.CosineSimilarity(queryVector, vector)
+		if !ok || score < req.MinScore {
+			continue
+		}
+		var labels []string
+		if row.SemanticLabels != "" {
+			if err := json.Unmarshal([]byte(row.SemanticLabels), &labels); err != nil {
+				zap.L().Warn("解析语义标签失败", zap.String("sample_id", row.SampleID), zap.Error(err))
+			}
+		}
+		results = append(results, SemanticSearchResult{
+			SensitiveFileID: row.SampleID,
+			FileName:        row.FileName,
+			SensitiveType:   row.SensitiveType,
+			RiskLevel:       row.RiskLevel,
+			SemanticLabels:  labels,
+			EmbeddingID:     row.EmbeddingID,
+			ModelName:       row.ModelName,
+			Score:           score,
+		})
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	if len(results) > topK {
+		results = results[:topK]
+	}
+
+	ctx.JSON(consts.StatusOK, map[string]any{
+		"total":             len(results),
+		"embedding_model":   modelName,
+		"vector_store":      "semantic_features",
+		"similarity_metric": "cosine",
+		"results":           results,
 	})
 }

@@ -11,16 +11,20 @@ set -Eeuo pipefail
 #   E2E_SERVER_URL=http://127.0.0.1:8080
 #   E2E_TOKEN=your-server-token
 #   E2E_KEEP_TMP=1
-#   E2E_REQUIRE_AGENT=1      # fail if semantic analysis uses rule-fallback instead of ChatModel
-#   E2E_REQUIRE_EMBEDDING=0  # set to 1 to also require non-empty embedding_id
+#   E2E_REQUIRE_AGENT=0      # optional: set to 1 to require Ark ChatModel semantic labels instead of rule fallback
+#   E2E_REQUIRE_EMBEDDING=1  # require Ollama/Ark embedding_id and semantic-search
+#   E2E_SKIP_UNIT_TESTS=0    # set to 1 only when debugging an already-tested server/client
+#   E2E_REPORT_FILE=MODULE_ONE_E2E_TEST_REPORT.md
 #   CLIENT_PYTHON=client/.venv/Scripts/python.exe
 
 SERVER_URL="${E2E_SERVER_URL:-http://127.0.0.1:8080}"
 E2E_TOKEN="${E2E_TOKEN:-}"
-E2E_REQUIRE_AGENT="${E2E_REQUIRE_AGENT:-1}"
-E2E_REQUIRE_EMBEDDING="${E2E_REQUIRE_EMBEDDING:-0}"
+E2E_REQUIRE_AGENT="${E2E_REQUIRE_AGENT:-0}"
+E2E_REQUIRE_EMBEDDING="${E2E_REQUIRE_EMBEDDING:-1}"
+E2E_SKIP_UNIT_TESTS="${E2E_SKIP_UNIT_TESTS:-0}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_DIR="$ROOT_DIR/client"
+SERVER_DIR="$ROOT_DIR/server"
 RUN_ID="$(date +%Y%m%d%H%M%S)-$$"
 # Keep temporary files under the project instead of /tmp so Windows Python can access them
 # when this script is launched from Git Bash / MSYS / WSL-like shells.
@@ -29,6 +33,7 @@ UPLOAD_DIR="$TMP_ROOT/upload_sample"
 SCAN_DIR="$TMP_ROOT/scan_target"
 DB_FILE="$TMP_ROOT/sensitive_tags_e2e.db"
 HOST_ID="e2e-$RUN_ID"
+REPORT_FILE="${E2E_REPORT_FILE:-$ROOT_DIR/MODULE_ONE_E2E_TEST_REPORT.md}"
 
 if [[ -n "${CLIENT_PYTHON:-}" ]]; then
   PYTHON_BIN="$CLIENT_PYTHON"
@@ -40,6 +45,10 @@ elif [[ -x "$CLIENT_DIR/.venv/bin/python" ]]; then
   PYTHON_BIN="$CLIENT_DIR/.venv/bin/python"
 else
   PYTHON_BIN="python"
+fi
+
+if [[ "$PYTHON_BIN" != /* && ! "$PYTHON_BIN" =~ ^[A-Za-z]: && "$PYTHON_BIN" != *\\* ]]; then
+  PYTHON_BIN="$ROOT_DIR/$PYTHON_BIN"
 fi
 
 is_windows_python() {
@@ -78,6 +87,89 @@ fi
 
 pass_count=0
 fail_count=0
+report_written=0
+FAILED_REASON=""
+PASS_MESSAGES=()
+
+write_report() {
+  local status="$1"
+  local generated_at
+  generated_at="$(date '+%Y-%m-%d %H:%M:%S')"
+  mkdir -p "$(dirname "$REPORT_FILE")"
+  {
+    printf '# 模块一自动化测试结果解析\n\n'
+    printf '## 总览\n\n'
+    printf '| 项目 | 结果 |\n'
+    printf '|---|---|\n'
+    printf '| 运行状态 | %s |\n' "$status"
+    printf '| 生成时间 | %s |\n' "$generated_at"
+    printf '| 服务地址 | %s |\n' "$SERVER_URL"
+    printf '| Python | %s |\n' "$PYTHON_BIN"
+    printf '| 通过检查数 | %s |\n' "$pass_count"
+    printf '| 失败检查数 | %s |\n' "$fail_count"
+    printf '| 要求 embedding | %s |\n' "$E2E_REQUIRE_EMBEDDING"
+    printf '| 要求 ChatModel 语义标签增强项 | %s |\n' "$E2E_REQUIRE_AGENT"
+    printf '| 临时目录 | %s |\n' "$TMP_ROOT"
+    if [[ -n "$FAILED_REASON" ]]; then
+      printf '| 失败原因 | %s |\n' "$FAILED_REASON"
+    fi
+    printf '\n## 分项结果\n\n'
+    if [[ ${#PASS_MESSAGES[@]} -eq 0 ]]; then
+      printf '%s\n' '- 尚无通过项，脚本可能在初始化阶段失败。'
+    else
+      local item
+      for item in "${PASS_MESSAGES[@]}"; do
+        printf '%s\n' "- PASS: $item"
+      done
+    fi
+    if [[ -n "$FAILED_REASON" ]]; then
+      printf '%s\n' "- FAIL: $FAILED_REASON"
+    fi
+
+    printf '\n## 测试输出说明\n\n'
+    printf '%s\n' '- `broken.pdf` / `parser failed` 是客户端单元测试故意构造的损坏 PDF，用来验证解析失败时会记录 `extract_error` 和 `skip_reason`，不是功能故障。'
+    printf '%s\n' '- `E2E_REQUIRE_AGENT=0` 表示不强制要求 ChatModel；模块一 3.4.5 要求的是 embedding 向量库，ChatModel 只用于提升语义标签质量。'
+
+    printf '\n## 对照 dlpagent.md 模块一要求\n\n'
+    printf '| dlpagent.md 条目 | 要求摘要 | 自动化覆盖情况 | 证据 |\n'
+    printf '|---|---|---|---|\n'
+    printf '| 3.1 核心目标 | 上传敏感文件后生成正则、关键词、文本指纹、可选向量特征 | 覆盖 | TC02 上传样本校验 regex/keyword/combined、fingerprint；TC05.2 校验 embedding/semantic-search |\n'
+    printf '| 3.2 输入内容 | 文本文件，办公文档/代码文件可选 | 部分覆盖 | E2E 覆盖 txt、py、zip；客户端单测覆盖 PDF 解析错误、pptx unsupported 标记；Office 全量格式仍属于可选增强 |\n'
+    printf '| 3.3.1 固定格式敏感信息 | 身份证、手机号、银行卡、邮箱、地址、车牌、护照、社保、税号、统一社会信用代码、API Key、Token、私钥、密码、数据库连接串、内网 IP、域名等 | 覆盖 | TC01.1 /api/server/content-scan 逐项断言内置规则命中 |\n'
+    printf '| 3.3.2 企业业务敏感信息 | 合同、客户、联系方式、项目/报价/财务/薪酬/组织/商业计划/招投标/源代码/接口/架构/漏洞/运维账号 | 部分覆盖 | E2E 覆盖客户、联系方式、报价、合同金额、API/密码/数据库连接；Go/Python 单测覆盖财务、薪资、源码、合同保密等组合规则；组织架构/招投标等仍主要依赖关键词扩展 |\n'
+    printf '| 3.3.3 文档语义特征 | 保密协议、客户名单、财务预算、报价单、薪资明细、研发设计、源码说明、内部培训、未公开财报、战略规划 | 覆盖主要路径 | TC05.1 校验 semantic_labels；server/core 语义回退与标签提示单测覆盖多类语义标签；ChatModel 为增强项，不是模块一必需条件 |\n'
+    printf '| 3.4.1 正则规则 | 生成/同步可执行正则规则 | 覆盖 | TC02、TC05、TC07 校验 regex 生成、同步、客户端扫描命中 |\n'
+    printf '| 3.4.2 关键词规则 | 生成/同步关键词规则 | 覆盖 | TC02、TC05、TC07 校验 keyword 生成、同步、扫描命中 |\n'
+    printf '| 3.4.3 组合规则 | 多条件组合规则 | 覆盖 | TC02、TC05 校验 combined 规则存在；服务端单测覆盖客户报价、财务、薪资、源码、合同组合 |\n'
+    printf '| 3.4.4 文件指纹 | SHA-256 与 SimHash | 覆盖 | TC02 校验 fingerprint；TC04 按 SHA-256 查询；TC07 精确复制 100 分；TC05 同步 fingerprints |\n'
+    printf '| 3.4.5 文件语义向量 | 调用大模型 embedding 构建向量数据库 | 覆盖 | TC05.1 要求 embedding_id；TC05.2 调用 /api/server/semantic-search 并确认 vector_store=semantic_features、metric=cosine；这里使用 Ollama bge-m3 embedding，不要求 ChatModel |\n'
+    printf '| 3.5 输出结果 | 返回 ID、类型、风险、规则、指纹、embedding、解释 | 覆盖 | TC02 校验上传响应中的 sensitive_file_id、risk、rules、fingerprint、semantic_labels、explanation；embedding_id 由 TC05.1 校验 |\n'
+    printf '| 3.6.1 扫描模式 | 接收指定目录扫描 | 覆盖 | TC07 扫描目录；TC12 非法路径失败 |\n'
+    printf '| 3.6.2 文本提取能力 | txt/csv/json/xml，Office/PDF/图片/压缩包/源码/二进制可选 | 部分覆盖 | E2E 覆盖 txt、py、zip 递归；客户端单测覆盖 pdf 失败标记、pptx unsupported；图片/OCR、rar/7z、eml/msg 不在当前模块一自动化覆盖内 |\n'
+    printf '| 3.6.3 敏感文件标记 | 本地 SQLite、hash、路径、敏感类型、风险等级等标签 | 覆盖 | TC06 SQLite 缓存；TC08 local_file_tags；TC09 重复扫描不重复插入；TC10/TC11 上报与查询扫描结果 |\n'
+
+    printf '\n## 结论\n\n'
+    if [[ "$status" == "PASSED" ]]; then
+      printf '本次自动化脚本通过。对 dlpagent.md 模块一的必需主链路已经覆盖：规则生成、规则同步、指纹、语义标签、Ollama embedding 向量库、目录扫描、本地标记和结果上报。ChatModel 可提升语义分析质量，但模块一的 3.4.5 只要求 embedding 构建向量数据库，因此不是必需项。\n\n'
+      printf '仍建议人工关注的边界：办公文档全格式、图片 OCR、rar/7z、eml/msg 属于可选或增强项，目前报告中标记为部分覆盖。\n'
+    else
+      printf '本次自动化脚本未完全通过，请优先查看“失败原因”和终端输出。覆盖结论以失败前已执行的检查为准。\n'
+    fi
+  } > "$REPORT_FILE"
+  report_written=1
+}
+
+write_report_on_exit() {
+  local exit_code="$1"
+  if [[ "$report_written" == "0" ]]; then
+    if [[ "$exit_code" == "0" ]]; then
+      write_report "PASSED"
+    else
+      [[ -n "$FAILED_REASON" ]] || FAILED_REASON="脚本异常退出，退出码 $exit_code"
+      write_report "FAILED"
+    fi
+  fi
+}
 
 log() {
   printf '\n[INFO] %s\n' "$*"
@@ -85,12 +177,15 @@ log() {
 
 pass() {
   pass_count=$((pass_count + 1))
+  PASS_MESSAGES+=("$*")
   printf '[PASS] %s\n' "$*"
 }
 
 fail() {
   fail_count=$((fail_count + 1))
+  FAILED_REASON="$*"
   printf '[FAIL] %s\n' "$*" >&2
+  write_report "FAILED"
   exit 1
 }
 
@@ -101,11 +196,14 @@ on_error() {
 trap 'on_error $LINENO' ERR
 
 cleanup() {
+  local exit_code="$?"
+  write_report_on_exit "$exit_code"
   if [[ "${E2E_KEEP_TMP:-0}" == "1" ]]; then
     printf '\n[INFO] E2E_KEEP_TMP=1, keeping temporary directory: %s\n' "$TMP_ROOT"
   else
     rm -rf "$TMP_ROOT"
   fi
+  printf '\n[INFO] Test report written to: %s\n' "$REPORT_FILE"
 }
 trap cleanup EXIT
 
@@ -240,16 +338,41 @@ run_client() {
 }
 
 require_cmd curl
+require_cmd go
 require_cmd "$PYTHON_BIN"
 auto_fix_wsl_server_url
 
 log "Using server: $SERVER_URL"
 log "Using Python: $PYTHON_BIN"
 log "Temporary directory: $TMP_ROOT"
-log "Require semantic Agent ChatModel: $E2E_REQUIRE_AGENT"
+log "Require optional ChatModel semantic labels: $E2E_REQUIRE_AGENT"
 log "Require embedding_id: $E2E_REQUIRE_EMBEDDING"
+log "Skip unit tests: $E2E_SKIP_UNIT_TESTS"
 
 mkdir -p "$UPLOAD_DIR" "$SCAN_DIR/nested"
+
+if [[ "$E2E_SKIP_UNIT_TESTS" != "1" ]]; then
+  log "TC00: server Go tests"
+  mkdir -p "$TMP_ROOT/go-cache" "$TMP_ROOT/go-appdata" "$TMP_ROOT/go-localappdata"
+  (
+    cd "$SERVER_DIR"
+    GOCACHE="$TMP_ROOT/go-cache" \
+      APPDATA="$TMP_ROOT/go-appdata" \
+      LOCALAPPDATA="$TMP_ROOT/go-localappdata" \
+      GOTELEMETRY=off \
+      go test ./...
+  )
+  pass "Server Go tests passed"
+
+  log "TC00.1: client Python tests"
+  (
+    cd "$CLIENT_DIR"
+    "$PYTHON_BIN" -m unittest discover -p "test_*.py" -v
+  )
+  pass "Client Python tests passed"
+else
+  pass "Unit tests skipped by E2E_SKIP_UNIT_TESTS=1"
+fi
 
 log "Checking Python client dependencies"
 "$PYTHON_BIN" - <<'PY'
@@ -326,6 +449,28 @@ json_assert "$health_json" "rules endpoint response has required fields" '
 for key in ["latest_version", "rules", "fingerprints", "config"]:
     if key not in data:
         raise SystemExit(f"missing key: {key}")
+'
+
+log "TC01.1: built-in content scan covers fixed-format sensitive information"
+content_scan_payload="$TMP_ROOT/content_scan_payload.json"
+cat > "$content_scan_payload" <<'JSON'
+{"content":"身份证 11010119900307123X\n手机号 13800138000\n银行卡 4111111111111111\n邮箱 test@example.com\n地址 四川省成都市高新区天府大道88号\n车牌 川A12345\n护照 E12345678\n社保号 社保 123456789012\n税号 税号 91350100M000100Y43\n统一社会信用代码 91350100M000100Y43\n合同编号 HT-2026-ABC001\nAPI_KEY = abcdefghijklmnop123456\naccess_token = abcdefghijklmnop1234567890\n-----BEGIN PRIVATE KEY-----\npassword = SuperSecret123\ndb = jdbc:mysql://127.0.0.1:3306/app\nprivate_ip = 192.168.1.10\n域名 internal.example.com\n报价 50万元"}
+JSON
+content_scan_json="$TMP_ROOT/content_scan.json"
+status="$(curl_post_json "$SERVER_URL/api/server/content-scan" "$content_scan_payload" "$content_scan_json")"
+assert_http_status "$status" "200" "POST /api/server/content-scan" "$content_scan_json"
+json_assert "$content_scan_json" "content-scan detects dlpagent fixed-format sensitive rules" '
+results = data.get("results") or []
+names = {item.get("rule_name") for item in results}
+expected = {
+    "id_card", "mobile_phone", "bank_card", "email", "license_plate",
+    "passport", "social_security", "tax_number", "credit_code",
+    "contract_number", "address", "private_ip", "domain", "api_key",
+    "access_token", "private_key", "password", "db_connection", "money_wan",
+}
+missing = sorted(expected - names)
+if missing:
+    raise SystemExit(f"missing fixed-format rule hits: {missing}; got {sorted(names)}")
 '
 
 log "TC02: upload sensitive sample"
@@ -425,7 +570,7 @@ if "semantic_label_hints" not in config:
     raise SystemExit("missing config.semantic_label_hints")
 '
 
-log "TC05.1: semantic Agent should use ChatModel instead of rule fallback"
+log "TC05.1: semantic labels and embedding metadata"
 RULES_JSON_PY="$(py_path "$rules_json")"
 "$PYTHON_BIN" - "$RULES_JSON_PY" "$SAMPLE_ID" "$E2E_REQUIRE_AGENT" "$E2E_REQUIRE_EMBEDDING" <<'PY'
 import json
@@ -460,7 +605,46 @@ print(json.dumps({
     "semantic_labels": labels,
 }, ensure_ascii=False, indent=2))
 PY
-pass "Semantic Agent record found and model path validated"
+pass "Semantic labels and embedding metadata validated"
+
+if [[ "$E2E_REQUIRE_EMBEDDING" == "1" ]]; then
+  log "TC05.2: semantic vector search returns uploaded sample"
+  semantic_search_payload="$TMP_ROOT/semantic_search_payload.json"
+  cat > "$semantic_search_payload" <<'JSON'
+{"content":"客户报价和联系人资料","top_k":10,"min_score":0.1}
+JSON
+  semantic_search_json="$TMP_ROOT/semantic_search.json"
+  status="$(curl_post_json "$SERVER_URL/api/server/semantic-search" "$semantic_search_payload" "$semantic_search_json")"
+  assert_http_status "$status" "200" "POST /api/server/semantic-search" "$semantic_search_json"
+  SEMANTIC_SEARCH_JSON_PY="$(py_path "$semantic_search_json")"
+  "$PYTHON_BIN" - "$SEMANTIC_SEARCH_JSON_PY" "$SAMPLE_ID" <<'PY'
+import json
+import sys
+
+path, sample_id = sys.argv[1:3]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+if data.get("vector_store") != "semantic_features":
+    raise SystemExit(f"unexpected vector_store: {data}")
+if data.get("similarity_metric") != "cosine":
+    raise SystemExit(f"unexpected similarity_metric: {data}")
+if not data.get("embedding_model"):
+    raise SystemExit(f"missing embedding_model: {data}")
+results = data.get("results") or []
+if not results:
+    raise SystemExit(f"semantic-search returned no results: {data}")
+match = next((item for item in results if item.get("sensitive_file_id") == sample_id), None)
+if not match:
+    raise SystemExit(f"uploaded sample not found in semantic-search results: {results}")
+if float(match.get("score", 0)) < 0.1:
+    raise SystemExit(f"uploaded sample score below threshold: {match}")
+if not match.get("embedding_id"):
+    raise SystemExit(f"uploaded sample missing embedding_id: {match}")
+PY
+  pass "semantic-search uses vector store and finds uploaded sample"
+else
+  pass "Semantic vector search skipped because E2E_REQUIRE_EMBEDDING=0"
+fi
 
 log "TC06: client sync writes local SQLite cache"
 sync_json="$TMP_ROOT/client_sync.json"

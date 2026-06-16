@@ -29,6 +29,8 @@ Thumbs.db
 
 # Misc
 *.bak
+.e2e_tmp/
+MODULE_ONE_E2E_TEST_REPORT.md
 
 # Review documents (not for upload)
 MODULE_ONE_IMPLEMENTATION_REVIEW.md
