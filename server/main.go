@@ -61,7 +61,9 @@ func main() {
 		server.WithHostPorts(addr),
 		server.WithMaxRequestBodySize(maxRequestBodySize),
 	)
+	h.Use(corsMiddleware())
 	h.Use(apiTokenAuthMiddleware(os.Getenv("SERVER_API_TOKEN")))
+	h.OPTIONS("/*path", func(c context.Context, ctx *app.RequestContext) {})
 
 	h.POST("/api/server/samples", router.UploadSample)
 	h.POST("/api/server/samples/batch", router.UploadSamplesBatch)
@@ -82,11 +84,30 @@ func main() {
 	h.POST("/api/client/scan-results", router.ReportScanResults)
 
 	h.GET("/api/server/scan-results", router.ListScanResults)
+	registerWebRoutes(h)
 
 	go waitForShutdown(h, logger)
 
 	zap.L().Info("敏感文件识别服务启动", zap.String("addr", addr), zap.Int("max_request_body_size", maxRequestBodySize))
 	h.Spin()
+}
+
+func corsMiddleware() app.HandlerFunc {
+	return func(c context.Context, ctx *app.RequestContext) {
+		origin := strings.TrimSpace(ctx.Request.Header.Get("Origin"))
+		if origin != "" {
+			ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
+			ctx.Response.Header.Set("Vary", "Origin")
+			ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
+		}
+		ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		ctx.Response.Header.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		if string(ctx.Method()) == consts.MethodOptions {
+			ctx.AbortWithStatus(consts.StatusNoContent)
+			return
+		}
+		ctx.Next(c)
+	}
 }
 
 func apiTokenAuthMiddleware(token string) app.HandlerFunc {
@@ -104,6 +125,10 @@ func apiTokenAuthMiddleware(token string) app.HandlerFunc {
 
 	expected := "Bearer " + token
 	return func(c context.Context, ctx *app.RequestContext) {
+		if !strings.HasPrefix(string(ctx.Path()), "/api/") {
+			ctx.Next(c)
+			return
+		}
 		authorization := strings.TrimSpace(ctx.Request.Header.Get(consts.HeaderAuthorization))
 		if subtle.ConstantTimeCompare([]byte(authorization), []byte(expected)) != 1 {
 			ctx.AbortWithStatusJSON(consts.StatusUnauthorized, map[string]string{"error": "未授权，请提供有效的 Authorization: Bearer <token>"})
@@ -132,6 +157,32 @@ func maxRequestBodySizeBytes() int {
 		mb = 512
 	}
 	return mb * 1024 * 1024
+}
+
+func registerWebRoutes(h *server.Hertz) {
+	webDir := strings.TrimSpace(os.Getenv("WEB_DIR"))
+	if webDir == "" {
+		if envFile := findEnvFile(); envFile != "" {
+			webDir = filepath.Join(filepath.Dir(envFile), "web")
+		} else if cwd, err := os.Getwd(); err == nil {
+			candidate := filepath.Join(cwd, "web")
+			if _, err := os.Stat(candidate); err == nil {
+				webDir = candidate
+			} else {
+				webDir = filepath.Join(filepath.Dir(cwd), "web")
+			}
+		}
+	}
+	if webDir == "" {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(webDir, "index.html")); err != nil {
+		zap.L().Warn("测试前端目录未找到，跳过静态页面托管", zap.String("web_dir", webDir), zap.Error(err))
+		return
+	}
+	h.StaticFile("/", filepath.Join(webDir, "index.html"))
+	h.StaticFS("/web", &app.FS{Root: webDir, IndexNames: []string{"index.html"}, PathRewrite: app.NewPathSlashesStripper(1)})
+	zap.L().Info("测试前端已启用", zap.String("url", "/"), zap.String("web_dir", webDir))
 }
 
 func waitForShutdown(h *server.Hertz, logger *zap.Logger) {

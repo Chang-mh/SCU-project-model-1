@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>模块一敏感文件识别 Agent 测试驾驶舱</title>
+  <link rel="stylesheet" href="/web/styles.css" />
+</head>
+<body>
+  <div class="grain"></div>
+  <aside class="side-rail">
+    <div class="demo-tag">◈ LIVE TEST FRONTEND</div>
+    <h1>敏感文件<br/>识别测试<br/>Agent<br/>驾驶舱</h1>
+    <p class="side-copy">按照模块一自动化测试方案，用真实 API 证据串联规则、指纹、语义向量与 Agent 判断。</p>
+
+    <div class="mini-metrics">
+      <div><span id="metricRules">—</span><em>规则</em></div>
+      <div><span id="metricFingerprints">—</span><em>指纹</em></div>
+      <div><span id="metricSemantic">—</span><em>语义</em></div>
+    </div>
+
+    <label class="field-label" for="apiBase">API BASE</label>
+    <input id="apiBase" class="rail-input" placeholder="同源 / http://127.0.0.1:8080" />
+    <label class="field-label" for="apiToken">ADMIN TOKEN</label>
+    <input id="apiToken" class="rail-input" placeholder="未配置可留空" type="password" />
+
+    <button class="rail-button primary" id="btnHealth">刷新证据</button>
+    <button class="rail-button" id="btnRunBrowserChecks">运行浏览器可测项</button>
+
+    <nav class="rail-nav">
+      <a href="#overview">01 总览</a>
+      <a href="#content-scan">02 固定格式</a>
+      <a href="#upload">03 上传样本</a>
+      <a href="#agent">04 Agent</a>
+      <a href="#reports">05 上报证据</a>
+    </nav>
+  </aside>
+
+  <main class="console">
+    <section class="hero" id="overview">
+      <div>
+        <span class="eyebrow">MODULE ONE · EXPLAINABLE DLP AGENT</span>
+        <h2>先规则命中，再 Agent 精判</h2>
+        <p>上传敏感样本，生成正则 / 关键词 / 组合规则、SHA-256 / SimHash 指纹与语义标签，再通过同步、扫描、上报接口形成可验收证据链。</p>
+      </div>
+      <div class="hero-actions">
+        <span class="status-pill" id="serverStatus"><i></i> 等待连接</span>
+        <button class="ghost-button" id="btnLoadRulesTop">演示刷新</button>
+      </div>
+    </section>
+
+    <section class="pipeline-grid">
+      <article class="step-card hot"><small>01</small><b>Rule</b><span>规则先筛</span><code>dropped &gt;= 0</code></article>
+      <article class="step-card"><small>02</small><b>Fingerprint</b><span>SHA-256 / SimHash</span><code>match_score</code></article>
+      <article class="step-card"><small>03</small><b>Semantic</b><span>语义标签与解释</span><code>model_name</code></article>
+      <article class="step-card"><small>04</small><b>Embedding</b><span>向量相似检索</span><code>cosine_score</code></article>
+      <article class="step-card"><small>05</small><b>Evidence</b><span>真实 API 证据</span><code>/api/*</code></article>
+    </section>
+
+    <section class="two-column">
+      <article class="panel tall">
+        <div class="panel-title"><span>主测试按钮</span><em>Automated plan surface</em></div>
+        <div class="test-list" id="testChecklist"></div>
+      </article>
+      <article class="panel tall evidence-panel">
+        <div class="panel-title"><span>真实 API 证据区</span><em id="evidenceMeta">尚未请求</em></div>
+        <pre id="evidenceBox">点击左侧或各模块按钮后，这里会展示请求方法、URL、状态码和原始 JSON 响应。</pre>
+      </article>
+    </section>
+
+    <section class="panel" id="content-scan">
+      <div class="panel-title"><span>固定格式敏感信息扫描</span><em>TC01.1 · built-in content scan</em></div>
+      <div class="workbench">
+        <textarea id="contentText" spellcheck="false"></textarea>
+        <div class="workbench-side">
+          <button class="accent-button" id="btnContentScan">执行 content-scan</button>
+          <p>覆盖手机号、邮箱、身份证、银行卡、API Key、Token、私钥、密码、数据库连接串、内网 IP、域名与金额。</p>
+          <div class="result-grid" id="contentResults"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="upload">
+      <div class="panel-title"><span>上传样本 / 规则 / 指纹</span><em>TC02 · rules + fingerprint + semantic labels</em></div>
+      <div class="form-grid">
+        <label>样本文件<input type="file" id="sampleFile" /></label>
+        <label>敏感类型<input id="sensitiveType" value="客户资料" /></label>
+        <label>风险等级<select id="riskLevel"><option>high</option><option>critical</option><option>medium</option><option>low</option><option>info</option></select></label>
+        <label>描述<input id="sampleDescription" value="客户报价和联系人信息 前端演示" /></label>
+      </div>
+      <div class="button-row">
+        <button class="accent-button" id="btnUpload">上传样本并生成规则</button>
+        <button class="ghost-button" id="btnRuleSync">同步规则证据</button>
+        <button class="ghost-button" id="btnDuplicateHint">重复上传验证</button>
+      </div>
+      <div class="upload-summary" id="uploadSummary"></div>
+    </section>
+
+    <section class="panel agent-panel" id="agent">
+      <div class="panel-title"><span>Agent 功能展示</span><em>Semantic Agent · Embedding · Explainable rules</em></div>
+      <div class="agent-layout">
+        <div class="agent-stage">
+          <div class="risk-compare">
+            <div><small>语义识别来源</small><strong id="agentModelName">待上传样本</strong></div>
+            <div class="arrow">→</div>
+            <div><small>向量检索模型</small><strong id="embeddingModel">待查询</strong></div>
+          </div>
+          <div class="agent-cards">
+            <article><b>Rule Agent</b><p>正则、关键词、组合规则先筛出候选命中。</p></article>
+            <article><b>Fingerprint Agent</b><p>SHA-256 精确命中，SimHash 捕捉相似敏感文本。</p></article>
+            <article><b>Semantic Agent</b><p>ChatModel 或规则降级输出语义标签与解释。</p></article>
+            <article><b>Embedding Agent</b><p>Ollama / Ark 向量入库，cosine similarity 排序。</p></article>
+          </div>
+        </div>
+        <div class="semantic-search-box">
+          <label>语义检索查询<textarea id="semanticQuery" spellcheck="false">客户报价和联系人资料</textarea></label>
+          <button class="accent-button" id="btnSemanticSearch">执行 semantic-search</button>
+          <div id="semanticResults" class="semantic-results"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title"><span>运维数据表视图</span><em>alert_logs / semantic_features / scan_results</em></div>
+      <div class="table-grid">
+        <div class="ops-table-wrap">
+          <table class="ops-table" id="rulesTable">
+            <thead><tr><th>Rule ID</th><th>类型</th><th>风险</th></tr></thead>
+            <tbody><tr><td colspan="3">等待规则同步</td></tr></tbody>
+          </table>
+        </div>
+        <div class="ops-table-wrap">
+          <table class="ops-table" id="semanticTable">
+            <thead><tr><th>Sample</th><th>Model</th><th>Embedding</th></tr></thead>
+            <tbody><tr><td colspan="3">等待语义标签</td></tr></tbody>
+          </table>
+        </div>
+        <div class="ops-table-wrap">
+          <table class="ops-table" id="reportsTable">
+            <thead><tr><th>File</th><th>Score</th><th>Verdict</th></tr></thead>
+            <tbody><tr><td colspan="3">等待扫描结果</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="two-column" id="reports">
+      <article class="panel">
+        <div class="panel-title"><span>扫描结果上报 / 查询</span><em>TC10-11 · report evidence</em></div>
+        <p class="muted">浏览器不能直接扫描本地目录，这里用最近上传样本构造一条模拟客户端扫描结果，验证服务端接收与查询接口。</p>
+        <div class="button-row">
+          <button class="accent-button" id="btnReportMock">上报模拟扫描结果</button>
+          <button class="ghost-button" id="btnListReports">查询服务端扫描结果</button>
+        </div>
+        <div id="reportResults" class="result-grid"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-title"><span>敏感文件查询</span><em>TC04 · sha256 / flexible query</em></div>
+        <label>SHA-256 或文件名<input id="sensitiveQuery" placeholder="上传后自动填入 sha256" /></label>
+        <div class="button-row">
+          <button class="accent-button" id="btnSensitiveQuery">查询敏感文件</button>
+          <button class="ghost-button" id="btnSensitiveList">列表检索</button>
+        </div>
+        <div id="sensitiveResults" class="result-grid"></div>
+      </article>
+    </section>
+
+    <section class="two-column">
+      <article class="panel">
+        <div class="panel-title"><span>评分与风险模型</span><em>MODULE_ONE_AUTOMATED_TEST_PLAN §4.3</em></div>
+        <table class="score-table">
+          <tr><th>命中项</th><th>分数</th></tr>
+          <tr><td>SHA-256 完全命中</td><td>100</td></tr>
+          <tr><td>SimHash 相似命中</td><td>70</td></tr>
+          <tr><td>组合规则命中</td><td>50</td></tr>
+          <tr><td>高危正则命中</td><td>30</td></tr>
+          <tr><td>关键词达到 min_hits</td><td>30</td></tr>
+          <tr><td>普通正则命中</td><td>15</td></tr>
+        </table>
+      </article>
+      <article class="panel">
+        <div class="panel-title"><span>当前结论</span><em>Explainable verdict</em></div>
+        <div class="verdict-box">
+          <small>风险等级</small>
+          <strong id="verdictRisk">WAITING</strong>
+          <p id="verdictText">完成上传、扫描或语义检索后，这里会汇总当前证据。</p>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script src="/web/config.js"></script>
+  <script src="/web/app.js"></script>
+</body>
+</html>
