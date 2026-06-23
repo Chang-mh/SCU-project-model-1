@@ -29,6 +29,7 @@ Thumbs.db
 
 # Misc
 *.bak
+*.hertz.gz
 .e2e_tmp/
 MODULE_ONE_E2E_TEST_REPORT.md
 

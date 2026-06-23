@@ -13,6 +13,8 @@ set -Eeuo pipefail
 #   E2E_KEEP_TMP=1
 #   E2E_REQUIRE_AGENT=0      # optional: set to 1 to require Ark ChatModel semantic labels instead of rule fallback
 #   E2E_REQUIRE_EMBEDDING=1  # require Ollama/Ark embedding_id and semantic-search
+#   E2E_EXPECT_EMBEDDING_MODEL=your-model-id  # optional: assert semantic-search used this embedding model
+#   E2E_EMBEDDING_LABEL="Ollama/Ark embedding" # label used in the generated report
 #   E2E_SKIP_UNIT_TESTS=0    # set to 1 only when debugging an already-tested server/client
 #   E2E_REPORT_FILE=MODULE_ONE_E2E_TEST_REPORT.md
 #   CLIENT_PYTHON=client/.venv/Scripts/python.exe
@@ -22,6 +24,8 @@ E2E_TOKEN="${E2E_TOKEN:-}"
 E2E_REQUIRE_AGENT="${E2E_REQUIRE_AGENT:-0}"
 E2E_REQUIRE_EMBEDDING="${E2E_REQUIRE_EMBEDDING:-1}"
 E2E_SKIP_UNIT_TESTS="${E2E_SKIP_UNIT_TESTS:-0}"
+E2E_EXPECT_EMBEDDING_MODEL="${E2E_EXPECT_EMBEDDING_MODEL:-}"
+E2E_EMBEDDING_LABEL="${E2E_EMBEDDING_LABEL:-Ollama/Ark embedding}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_DIR="$ROOT_DIR/client"
 SERVER_DIR="$ROOT_DIR/server"
@@ -108,6 +112,10 @@ write_report() {
     printf '| 通过检查数 | %s |\n' "$pass_count"
     printf '| 失败检查数 | %s |\n' "$fail_count"
     printf '| 要求 embedding | %s |\n' "$E2E_REQUIRE_EMBEDDING"
+    printf '| Embedding 来源 | %s |\n' "$E2E_EMBEDDING_LABEL"
+    if [[ -n "$E2E_EXPECT_EMBEDDING_MODEL" ]]; then
+      printf '| 期望 Embedding 模型 | %s |\n' "$E2E_EXPECT_EMBEDDING_MODEL"
+    fi
     printf '| 要求 ChatModel 语义标签增强项 | %s |\n' "$E2E_REQUIRE_AGENT"
     printf '| 临时目录 | %s |\n' "$TMP_ROOT"
     if [[ -n "$FAILED_REASON" ]]; then
@@ -129,6 +137,7 @@ write_report() {
     printf '\n## 测试输出说明\n\n'
     printf '%s\n' '- `broken.pdf` / `parser failed` 是客户端单元测试故意构造的损坏 PDF，用来验证解析失败时会记录 `extract_error` 和 `skip_reason`，不是功能故障。'
     printf '%s\n' '- `E2E_REQUIRE_AGENT=0` 表示不强制要求 ChatModel；模块一 3.4.5 要求的是 embedding 向量库，ChatModel 只用于提升语义标签质量。'
+    printf '%s\n' "- 本次报告中的 Embedding 来源标签：$E2E_EMBEDDING_LABEL。"
 
     printf '\n## 对照 dlpagent.md 模块一要求\n\n'
     printf '| dlpagent.md 条目 | 要求摘要 | 自动化覆盖情况 | 证据 |\n'
@@ -142,7 +151,7 @@ write_report() {
     printf '| 3.4.2 关键词规则 | 生成/同步关键词规则 | 覆盖 | TC02、TC05、TC07 校验 keyword 生成、同步、扫描命中 |\n'
     printf '| 3.4.3 组合规则 | 多条件组合规则 | 覆盖 | TC02、TC05 校验 combined 规则存在；服务端单测覆盖客户报价、财务、薪资、源码、合同组合 |\n'
     printf '| 3.4.4 文件指纹 | SHA-256 与 SimHash | 覆盖 | TC02 校验 fingerprint；TC04 按 SHA-256 查询；TC07 精确复制 100 分；TC05 同步 fingerprints |\n'
-    printf '| 3.4.5 文件语义向量 | 调用大模型 embedding 构建向量数据库 | 覆盖 | TC05.1 要求 embedding_id；TC05.2 调用 /api/server/semantic-search 并确认 vector_store=semantic_features、metric=cosine；这里使用 Ollama bge-m3 embedding，不要求 ChatModel |\n'
+    printf '| 3.4.5 文件语义向量 | 调用大模型 embedding 构建向量数据库 | 覆盖 | TC05.1 要求 embedding_id；TC05.2 调用 /api/server/semantic-search 并确认 vector_store=semantic_features、metric=cosine；本次使用 %s，不要求 ChatModel |\n' "$E2E_EMBEDDING_LABEL"
     printf '| 3.5 输出结果 | 返回 ID、类型、风险、规则、指纹、embedding、解释 | 覆盖 | TC02 校验上传响应中的 sensitive_file_id、risk、rules、fingerprint、semantic_labels、explanation；embedding_id 由 TC05.1 校验 |\n'
     printf '| 3.6.1 扫描模式 | 接收指定目录扫描 | 覆盖 | TC07 扫描目录；TC12 非法路径失败 |\n'
     printf '| 3.6.2 文本提取能力 | txt/csv/json/xml，Office/PDF/图片/压缩包/源码/二进制可选 | 部分覆盖 | E2E 覆盖 txt、py、zip 递归；客户端单测覆盖 pdf 失败标记、pptx unsupported；图片/OCR、rar/7z、eml/msg 不在当前模块一自动化覆盖内 |\n'
@@ -150,7 +159,7 @@ write_report() {
 
     printf '\n## 结论\n\n'
     if [[ "$status" == "PASSED" ]]; then
-      printf '本次自动化脚本通过。对 dlpagent.md 模块一的必需主链路已经覆盖：规则生成、规则同步、指纹、语义标签、Ollama embedding 向量库、目录扫描、本地标记和结果上报。ChatModel 可提升语义分析质量，但模块一的 3.4.5 只要求 embedding 构建向量数据库，因此不是必需项。\n\n'
+      printf '本次自动化脚本通过。对 dlpagent.md 模块一的必需主链路已经覆盖：规则生成、规则同步、指纹、语义标签、%s 向量库、目录扫描、本地标记和结果上报。ChatModel 可提升语义分析质量，但模块一的 3.4.5 只要求 embedding 构建向量数据库，因此不是必需项。\n\n' "$E2E_EMBEDDING_LABEL"
       printf '仍建议人工关注的边界：办公文档全格式、图片 OCR、rar/7z、eml/msg 属于可选或增强项，目前报告中标记为部分覆盖。\n'
     else
       printf '本次自动化脚本未完全通过，请优先查看“失败原因”和终端输出。覆盖结论以失败前已执行的检查为准。\n'
@@ -347,6 +356,10 @@ log "Using Python: $PYTHON_BIN"
 log "Temporary directory: $TMP_ROOT"
 log "Require optional ChatModel semantic labels: $E2E_REQUIRE_AGENT"
 log "Require embedding_id: $E2E_REQUIRE_EMBEDDING"
+log "Embedding source label: $E2E_EMBEDDING_LABEL"
+if [[ -n "$E2E_EXPECT_EMBEDDING_MODEL" ]]; then
+  log "Expected embedding model: $E2E_EXPECT_EMBEDDING_MODEL"
+fi
 log "Skip unit tests: $E2E_SKIP_UNIT_TESTS"
 
 mkdir -p "$UPLOAD_DIR" "$SCAN_DIR/nested"
@@ -617,25 +630,31 @@ JSON
   status="$(curl_post_json "$SERVER_URL/api/server/semantic-search" "$semantic_search_payload" "$semantic_search_json")"
   assert_http_status "$status" "200" "POST /api/server/semantic-search" "$semantic_search_json"
   SEMANTIC_SEARCH_JSON_PY="$(py_path "$semantic_search_json")"
-  "$PYTHON_BIN" - "$SEMANTIC_SEARCH_JSON_PY" "$SAMPLE_ID" <<'PY'
+  "$PYTHON_BIN" - "$SEMANTIC_SEARCH_JSON_PY" "$SAMPLE_ID" "$E2E_EXPECT_EMBEDDING_MODEL" <<'PY'
 import json
 import sys
 
 path, sample_id = sys.argv[1:3]
+expected_model = sys.argv[3] if len(sys.argv) > 3 else ""
 with open(path, encoding="utf-8") as f:
     data = json.load(f)
 if data.get("vector_store") != "semantic_features":
     raise SystemExit(f"unexpected vector_store: {data}")
 if data.get("similarity_metric") != "cosine":
     raise SystemExit(f"unexpected similarity_metric: {data}")
-if not data.get("embedding_model"):
+embedding_model = data.get("embedding_model")
+if not embedding_model:
     raise SystemExit(f"missing embedding_model: {data}")
+if expected_model and embedding_model != expected_model:
+    raise SystemExit(f"embedding_model = {embedding_model!r}, want {expected_model!r}: {data}")
 results = data.get("results") or []
 if not results:
     raise SystemExit(f"semantic-search returned no results: {data}")
 match = next((item for item in results if item.get("sensitive_file_id") == sample_id), None)
 if not match:
     raise SystemExit(f"uploaded sample not found in semantic-search results: {results}")
+if expected_model and match.get("model_name") != expected_model:
+    raise SystemExit(f"uploaded sample model_name = {match.get('model_name')!r}, want {expected_model!r}: {match}")
 if float(match.get("score", 0)) < 0.1:
     raise SystemExit(f"uploaded sample score below threshold: {match}")
 if not match.get("embedding_id"):

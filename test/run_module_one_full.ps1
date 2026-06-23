@@ -5,13 +5,15 @@ param(
     [string]$GoBin = "D:\Go\bin",
     [string]$OllamaBin = "D:\Ollama-bigmodle\Ollama",
     [switch]$RequireChatModel,
-    [switch]$SkipEmbedding
+    [switch]$SkipEmbedding,
+    [switch]$UseArkEmbedding
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$scriptPath = Join-Path $repoRoot "test/e2e_module_one_full.sh"
+$scriptName = if ($UseArkEmbedding) { "test/e2e_module_one_ark_embedding.sh" } else { "test/e2e_module_one_full.sh" }
+$scriptPath = Join-Path $repoRoot $scriptName
 
 if (-not (Test-Path -LiteralPath $GitBash)) {
     throw "Git Bash not found: $GitBash"
@@ -30,14 +32,19 @@ $pathParts = @($GoBin, $OllamaBin, $env:Path) | Where-Object { $_ -and $_.Trim()
 $env:Path = ($pathParts -join ";")
 
 Write-Host "[INFO] Running module one full E2E..."
+Write-Host "[INFO] Script: $scriptName"
 Write-Host "[INFO] Server: $env:E2E_SERVER_URL"
 Write-Host "[INFO] Client Python: $env:CLIENT_PYTHON"
 Write-Host "[INFO] Require embedding: $env:E2E_REQUIRE_EMBEDDING"
 Write-Host "[INFO] Require ChatModel enhancement: $env:E2E_REQUIRE_AGENT"
+if ($UseArkEmbedding) {
+    Write-Host "[INFO] Embedding provider: Ark / 火山方舟"
+    Write-Host "[INFO] Ark embedding model: $env:ARK_EMBEDDING_MODEL"
+}
 
 Push-Location $repoRoot
 try {
-    & $GitBash "test/e2e_module_one_full.sh"
+    & $GitBash $scriptName
     exit $LASTEXITCODE
 }
 finally {
